@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
+import * as orderService from '../../Services/orderService';
 import Card from '../ui/Card';
 import Input from '../ui/Input';
 import Select from '../ui/Select';
 import Checkbox from '../ui/Checkbox';
 import RadioGroup from '../ui/RadioGroup';
-import Button from '../ui/Button';
+import Button from "../ui/Button";
 // Assuming helper functions like getTodayDate, getNextMonthDate, etc. exist in utils
 import { getTodayDate, getNextMonthDate, titleOptions, classOptions, prescribedByOptions, formatNumericInput } from '../../utils/helpers';
 import CustomerInfoSection from './CustomerInfoSection';
@@ -166,35 +167,83 @@ const OrderCardForm: React.FC = () => {
     setFormData(prev => ({ ...prev, manualEntryItemAmount: rate * qty }));
   }, [formData.manualEntryRate, formData.manualEntryQty]);
 
-  // Effect to calculate Balance and total Advance in Payment Section
+  // Effect to calculate taxes, total advance, and balance in Payment Section
   useEffect(() => {
-    const paymentEstimate = parseFloat(formData.paymentEstimate || '0');
-    const schAmt = parseFloat(formData.schAmt || '0');
-    const cashAdv1 = parseFloat(formData.cashAdv1 || '0');
-    const ccUpiAdv = parseFloat(formData.ccUpiAdv || '0');
-    const chequeAdv = parseFloat(formData.chequeAdv || '0');
-    const cashAdv2 = parseFloat(formData.cashAdv2 || '0');
+    try {
+      // Calculate total base amount (rate * qty) for all items
+      const totalBaseAmount = formData.selectedItems.reduce((sum, item) => {
+        const rate = parseFloat(item.rate?.toString() || '0');
+        const qty = parseFloat(item.qty?.toString() || '1');
+        return sum + (rate * qty);
+      }, 0);
 
-    // Calculate total advance
-    const totalAdvance = cashAdv1 + ccUpiAdv + chequeAdv + cashAdv2;
+      // Calculate total taxes from all items
+      const totalTaxAmount = formData.selectedItems.reduce((sum, item) => {
+        const rate = parseFloat(item.rate?.toString() || '0');
+        const qty = parseFloat(item.qty?.toString() || '1');
+        const baseTotal = rate * qty;
+        const taxPercent = parseFloat(item.taxPercent?.toString() || '0');
+        const taxAmount = (baseTotal * taxPercent) / 100;
+        return sum + taxAmount;
+      }, 0);
+      
+      // Calculate total discount amount
+      const totalDiscountAmount = formData.selectedItems.reduce((sum, item) => {
+        return sum + (parseFloat(item.discountAmount?.toString() || '0'));
+      }, 0);
 
-    // Calculate balance
-    const balance = paymentEstimate - schAmt - totalAdvance;
+      // Payment estimate = base amount + tax (before discount)
+      const paymentEstimate = totalBaseAmount + totalTaxAmount;
+      
+      // Calculate total advance payments (directly from form inputs, not derived values)
+      const cashAdv1 = parseFloat(formData.cashAdv1?.toString() || '0') || 0;
+      const ccUpiAdv = parseFloat(formData.ccUpiAdv?.toString() || '0') || 0;
+      const advanceOther = parseFloat(formData.advance?.toString() || '0') || 0;
+      
+      // Do not set the advance field in state - this was causing the recursive loop
+      const totalAdvance = cashAdv1 + ccUpiAdv + advanceOther;
 
-    // Update state for both balance and the calculated advance
-    setFormData(prev => ({ 
-      ...prev, 
-      balance: balance.toFixed(2), 
-      advance: totalAdvance.toFixed(2) 
-    }));
-
+      // Calculate final amount after discount (base + tax - discount)
+      const finalAmount = paymentEstimate - totalDiscountAmount;
+      
+      // Balance = final amount - total advance (ensuring it's not negative)
+      const balance = Math.max(0, finalAmount - totalAdvance);
+      
+      console.log('Payment Calculation Debug:', {
+        totalBaseAmount,
+        totalTaxAmount,
+        totalDiscountAmount,
+        paymentEstimate,
+        cashAdv1,
+        ccUpiAdv,
+        advanceOther,
+        totalAdvance,
+        finalAmount,
+        balance
+      });
+      
+      // Update state, but DON'T update the advance field itself to avoid recursion
+      setFormData(prev => ({
+        ...prev,
+        paymentEstimate: paymentEstimate.toFixed(2),
+        balance: balance.toFixed(2),
+        chequeAdv: totalTaxAmount.toFixed(2),
+        schAmt: totalDiscountAmount.toFixed(2)
+        // Removed advance: totalAdvance.toFixed(2) to prevent the loop
+      }));
+    } catch (error) {
+      console.error('Error in payment calculation:', error);
+    }
   }, [
-    formData.paymentEstimate,
-    formData.schAmt,
+    formData.selectedItems,
     formData.cashAdv1,
     formData.ccUpiAdv,
+    formData.cashAdv2,
+    formData.paymentEstimate,
+    formData.balance,
     formData.chequeAdv,
-    formData.cashAdv2
+    formData.schAmt,
+    formData.advance
   ]);
 
   // Effect to handle prescription logic (IPD calculation)
@@ -870,32 +919,233 @@ const OrderCardForm: React.FC = () => {
       ...prev,
       selectedItems: prev.selectedItems.filter((_, i) => i !== index)
     }));
-     setNotification({
-       message: 'Item deleted',
-       type: 'success',
-       visible: true
-     });
+    setNotification({
+      message: 'Item deleted',
+      type: 'success',
+      visible: true
+    });
   };
-
+  
+  // Form submission handler
   const handleOrderCardSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    console.log('Order Card Data Submitted:', formData);
-     setNotification({
-       message: 'Order Card submitted! Check console for data.',
-       type: 'success',
-       visible: true
-     });
-    // TODO: Implement actual save logic
+    console.log('Order Card Form Submitted:', formData);
+    
+    // Call the function to save the order to the database
+    saveOrderToDatabase();
+  };
+  
+  // Function to save order data to the database
+  const saveOrderToDatabase = async () => {
+    try {
+      console.log('Saving order to database...');
+      
+      // First, get the prescription ID from the prescription number
+      const { data: prescriptions, error: prescError } = await supabase
+        .from('prescriptions')
+        .select('id')
+        .eq('prescription_no', formData.prescriptionNo)
+        .single();
+      
+      if (prescError || !prescriptions) {
+        console.error('Error finding prescription:', prescError instanceof Error ? prescError.message : 'Unknown error');
+        setNotification({
+          message: `Error: Could not find prescription with number ${formData.prescriptionNo}`,
+          type: 'error',
+          visible: true
+        });
+        return;
+      }
+      
+      console.log('Found prescription:', prescriptions);
+      const prescriptionId = prescriptions.id;
+      
+      // Use the existing order number or generate a new one
+      const orderNumber = formData.referenceNo || `ORD-${Date.now()}`;
+      
+      // First check if an order with this order number already exists
+      const { data: existingOrder, error: orderCheckError } = await supabase
+        .from('orders')
+        .select('id')
+        .eq('order_no', orderNumber)
+        .single();
+      
+      console.log('Existing order check:', existingOrder);
+      
+      // Prepare order data
+      const orderData = {
+        prescriptionId,
+        orderNo: orderNumber,
+        billNo: formData.billNo || '',
+        orderDate: formData.date,
+        deliveryDate: formData.deliveryDateTime?.split('T')[0] || new Date().toISOString().split('T')[0], // Added fallback
+        status: formData.orderStatus || 'Processing',
+        remarks: 'General notes for the order',
+        
+        // Map the items
+        items: formData.selectedItems.map((item, index) => ({
+          si: index + 1,
+          itemType: 'unknown', // Default to unknown since itemType is not in SelectedItem
+          itemCode: item.itemCode || '',
+          itemName: item.itemName || '',
+          rate: typeof item.rate === 'string' ? parseFloat(item.rate) : Number(item.rate),
+          qty: item.qty,
+          amount: typeof item.amount === 'string' ? parseFloat(item.amount) : Number(item.amount),
+          taxPercent: item.taxPercent || 0,
+          discountPercent: item.discountPercent || 0,
+          discountAmount: item.discountAmount ? 
+            (typeof item.discountAmount === 'string' ? parseFloat(item.discountAmount) : Number(item.discountAmount)) : 0,
+          brandName: item.brandName || '',
+          index: item.index || '',
+          coating: item.coating || ''
+        })),
+        
+        // Map payment details
+        payment: {
+          paymentEstimate: parseFloat(formData.paymentEstimate || '0'),
+          taxAmount: 0, // Calculated tax
+          discountAmount: 0, // Total discount
+          finalAmount: parseFloat(formData.paymentEstimate || '0'), // Final amount after tax and discount
+          advanceCash: parseFloat(formData.cashAdv1 || '0'),
+          advanceCardUpi: parseFloat(formData.ccUpiAdv || '0'),
+          advanceOther: parseFloat(formData.chequeAdv || '0'),
+          scheduleAmount: parseFloat(formData.schAmt || '0')
+        }
+      };
+      
+      console.log('Prepared order data:', orderData);
+      
+      let result;
+      if (existingOrder) {
+        // If order exists, update it instead of recreating it
+        console.log('Updating existing order:', existingOrder.id);
+        
+        try {
+          // 1. Update the main order record
+          const { error: orderUpdateError } = await supabase
+            .from('orders')
+            .update({
+              bill_no: orderData.billNo,
+              order_date: orderData.orderDate,
+              delivery_date: orderData.deliveryDate,
+              status: orderData.status,
+              remarks: orderData.remarks
+            })
+            .eq('id', existingOrder.id);
+            
+          if (orderUpdateError) {
+            console.error('Error updating order:', orderUpdateError);
+            throw new Error(`Failed to update order: ${orderUpdateError.message}`);
+          }
+          
+          // 2. Delete existing order items for this order
+          const { error: itemsDeleteError } = await supabase
+            .from('order_items')
+            .delete()
+            .eq('order_id', existingOrder.id);
+            
+          if (itemsDeleteError) {
+            console.error('Error deleting order items:', itemsDeleteError);
+            throw new Error(`Failed to delete order items: ${itemsDeleteError.message}`);
+          }
+          
+          // 3. Insert new order items
+          const orderItems = orderData.items.map((item, index) => ({
+            order_id: existingOrder.id,
+            si: item.si,
+            item_type: item.itemType,
+            item_code: item.itemCode,
+            item_name: item.itemName,
+            rate: item.rate,
+            qty: item.qty,
+            amount: item.amount,
+            tax_percent: item.taxPercent,
+            discount_percent: item.discountPercent,
+            discount_amount: item.discountAmount,
+            brand_name: item.brandName,
+            index: item.index,
+            coating: item.coating
+          }));
+          
+          const { error: itemsInsertError } = await supabase
+            .from('order_items')
+            .insert(orderItems);
+            
+          if (itemsInsertError) {
+            console.error('Error inserting order items:', itemsInsertError);
+            throw new Error(`Failed to insert order items: ${itemsInsertError.message}`);
+          }
+          
+          // 4. Update payment record
+          const { error: paymentUpdateError } = await supabase
+            .from('order_payments')
+            .update({
+              payment_estimate: orderData.payment.paymentEstimate,
+              tax_amount: orderData.payment.taxAmount,
+              discount_amount: orderData.payment.discountAmount,
+              final_amount: orderData.payment.finalAmount,
+              advance_cash: orderData.payment.advanceCash,
+              advance_card_upi: orderData.payment.advanceCardUpi,
+              advance_other: orderData.payment.advanceOther,
+              schedule_amount: orderData.payment.scheduleAmount
+            })
+            .eq('order_id', existingOrder.id);
+            
+          if (paymentUpdateError) {
+            console.error('Error updating payment:', paymentUpdateError);
+            throw new Error(`Failed to update payment: ${paymentUpdateError.message}`);
+          }
+          
+          console.log('Successfully updated order and related records');
+          result = { 
+            success: true, 
+            message: 'Order updated successfully', 
+            orderId: existingOrder.id 
+          };
+        } catch (updateError) {
+          console.error('Error during order update process:', updateError);
+          result = { 
+            success: false, 
+            message: updateError instanceof Error ? updateError.message : 'Unknown error during update' 
+          };
+        }
+      } else {
+        // If no existing order, create a new one
+        console.log('Creating new order');
+        result = await orderService.saveOrder(orderData);
+      }
+      
+      if (result && result.success) {
+        setNotification({
+          message: `Order saved successfully! Order ID: ${result.orderId}`,
+          type: 'success',
+          visible: true
+        });
+      } else {
+        setNotification({
+          message: `Error: ${result ? result.message : 'Unknown error'}`,
+          type: 'error',
+          visible: true
+        });
+      }
+    } catch (error) {
+      console.error('Error in saveOrderToDatabase:', error);
+      setNotification({
+        message: `An unexpected error occurred: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        type: 'error',
+        visible: true,
+      });
+    }
   };
 
   const handleClear = () => {
     setFormData(initialFormState);
     setRetestAfterChecked(false);
-     setNotification({
-       message: 'Form cleared',
-       type: 'success',
-       visible: true
-     });
+    setNotification({
+      message: 'Form cleared',
+      type: 'success',
+      visible: true
+    });
   };
 
   const handleApplyDiscount = () => {
@@ -908,11 +1158,26 @@ const OrderCardForm: React.FC = () => {
       });
       return;
     }
-    const totalBeforeDiscount = formData.selectedItems.reduce(
-      (sum, item) => sum + (item.rate * item.qty),
-      0
-    );
-    if (totalBeforeDiscount <= 0) {
+    
+    // Calculate total base amount and tax amount
+    let totalBaseAmount = 0;
+    let totalTaxAmount = 0;
+    
+    formData.selectedItems.forEach(item => {
+      const rate = parseFloat(item.rate?.toString() || '0');
+      const qty = parseFloat(item.qty?.toString() || '1');
+      const baseTotal = rate * qty;
+      totalBaseAmount += baseTotal;
+      
+      const taxPercent = parseFloat(item.taxPercent?.toString() || '0');
+      const taxAmount = (baseTotal * taxPercent) / 100;
+      totalTaxAmount += taxAmount;
+    });
+    
+    // Total including tax
+    const totalWithTax = totalBaseAmount + totalTaxAmount;
+    
+    if (totalWithTax <= 0) {
       setNotification({
         message: 'No items to apply discount to',
         type: 'error',
@@ -920,31 +1185,55 @@ const OrderCardForm: React.FC = () => {
       });
       return;
     }
+    
     const discountType = formData.discountType || 'percentage';
     const discountAmount = discountType === 'percentage'
-      ? (totalBeforeDiscount * discountValue) / 100
-      : Math.min(discountValue, totalBeforeDiscount);
+      ? (totalWithTax * discountValue) / 100
+      : Math.min(discountValue, totalWithTax);
+    
+    console.log('Discount calculation:', {
+      totalBaseAmount,
+      totalTaxAmount,
+      totalWithTax,
+      discountValue,
+      discountType,
+      discountAmount
+    });
+    
+    // Apply discount proportionally to each item
     const updatedItems = formData.selectedItems.map(item => {
-      const itemTotal = item.rate * item.qty;
-      // Avoid division by zero if itemTotal is 0
-      const ratio = itemTotal === 0 ? 0 : itemTotal / totalBeforeDiscount;
+      const rate = parseFloat(item.rate?.toString() || '0');
+      const qty = parseFloat(item.qty?.toString() || '1');
+      const baseTotal = rate * qty;
+      
+      const taxPercent = parseFloat(item.taxPercent?.toString() || '0');
+      const taxAmount = (baseTotal * taxPercent) / 100;
+      
+      const itemTotalWithTax = baseTotal + taxAmount;
+      
+      // Calculate this item's share of the total discount
+      const ratio = itemTotalWithTax === 0 ? 0 : itemTotalWithTax / totalWithTax;
       const itemDiscount = discountAmount * ratio;
-      const discountedTotal = itemTotal - itemDiscount;
+      
+      // Apply the discount to the base amount (for display purposes only)
+      const discountedBaseTotal = baseTotal - (itemDiscount * (baseTotal / itemTotalWithTax));
+      
       return {
         ...item,
-        amount: parseFloat(discountedTotal.toFixed(2)),
+        amount: parseFloat(discountedBaseTotal.toFixed(2)),
         discountAmount: parseFloat(itemDiscount.toFixed(2)),
-        discountPercent: itemTotal === 0 ? 0 : parseFloat(((itemDiscount / itemTotal) * 100).toFixed(2)), // Avoid division by zero
+        discountPercent: itemTotalWithTax === 0 ? 0 : parseFloat(((itemDiscount / itemTotalWithTax) * 100).toFixed(2))
       };
     });
+    
     setFormData(prev => ({
       ...prev,
       selectedItems: updatedItems,
-      applyDiscount: '', // Clear discount input after applying
-      // paymentEstimate is recalculated by useEffect based on selectedItems
+      applyDiscount: '',
     }));
+    
     setNotification({
-      message: `Discount applied successfully!`, // More generic message as it's applied item-wise
+      message: `Discount applied successfully!`,
       type: 'success',
       visible: true
     });
@@ -956,55 +1245,102 @@ const OrderCardForm: React.FC = () => {
     setFormData(prev => {
       const updatedItems = [...prev.selectedItems];
       const item = { ...updatedItems[index] };
-      const itemTotal = item.rate * item.qty;
+      
+      // Get base amount for the item
+      const rate = parseFloat(item.rate?.toString() || '0');
+      const qty = parseFloat(item.qty?.toString() || '1');
+      const baseTotal = rate * qty;
+      
+      // Calculate tax for this item
+      const taxPercent = parseFloat(item.taxPercent?.toString() || '0');
+      const taxAmount = (baseTotal * taxPercent) / 100;
+      
+      // Total with tax
+      const itemTotalWithTax = baseTotal + taxAmount;
 
-      if (itemTotal === 0) return prev; // Prevent changes if item amount is 0
+      if (baseTotal === 0) return prev; // Prevent changes if item amount is 0
+      
+      console.log('Item discount calculation:', {
+        item, baseTotal, taxAmount, itemTotalWithTax, numericValue, type
+      });
 
       if (type === 'percentage') {
         const percentage = Math.min(100, Math.max(0, numericValue));
-        const discountAmount = (itemTotal * percentage) / 100;
+        
+        // Apply discount to the total with tax
+        const discountAmount = (itemTotalWithTax * percentage) / 100;
+        
         item.discountPercent = percentage;
         item.discountAmount = parseFloat(discountAmount.toFixed(2));
-        item.amount = parseFloat((itemTotal - discountAmount).toFixed(2));
+        
+        // The amount shown is the base price after discount (for display only)
+        const discountedBaseAmount = baseTotal - (discountAmount * (baseTotal / itemTotalWithTax));
+        item.amount = parseFloat(discountedBaseAmount.toFixed(2));
       } else { // type === 'fixed'
-        const discountAmount = Math.min(itemTotal, Math.max(0, numericValue));
-        const discountPercentage = (discountAmount / itemTotal) * 100;
+        // Cap the fixed discount at the total amount with tax
+        const discountAmount = Math.min(itemTotalWithTax, Math.max(0, numericValue));
+        const discountPercentage = (discountAmount / itemTotalWithTax) * 100;
+        
         item.discountAmount = parseFloat(discountAmount.toFixed(2));
         item.discountPercent = parseFloat(discountPercentage.toFixed(2));
-        item.amount = parseFloat((itemTotal - discountAmount).toFixed(2));
+        
+        // The amount shown is the base price after discount (for display only)
+        const discountedBaseAmount = baseTotal - (discountAmount * (baseTotal / itemTotalWithTax));
+        item.amount = parseFloat(discountedBaseAmount.toFixed(2));
       }
+      
       updatedItems[index] = item;
 
-      // Manually trigger payment estimate update since selectedItems is the dependency
-      const total = updatedItems.reduce((sum, i) => sum + i.amount, 0);
-      const schAmt = updatedItems.reduce((sum, i) => sum + (i.discountAmount || 0), 0);
-      const advance = prev.advance === '' ? 0 : parseFloat(prev.advance);
-      const balance = total - (schAmt + advance); // Use total after item discounts
+      // Calculate totals
+      const baseAmount = updatedItems.reduce((sum, i) => {
+        const itemRate = parseFloat(i.rate?.toString() || '0');
+        const itemQty = parseFloat(i.qty?.toString() || '1');
+        return sum + (itemRate * itemQty);
+      }, 0);
+      
+      const taxTotal = updatedItems.reduce((sum, i) => {
+        const itemRate = parseFloat(i.rate?.toString() || '0');
+        const itemQty = parseFloat(i.qty?.toString() || '1');
+        const itemBaseTotal = itemRate * itemQty;
+        const itemTaxPercent = parseFloat(i.taxPercent?.toString() || '0');
+        return sum + ((itemBaseTotal * itemTaxPercent) / 100);
+      }, 0);
+      
+      const discountTotal = updatedItems.reduce((sum, i) => {
+        return sum + (parseFloat(i.discountAmount?.toString() || '0'));
+      }, 0);
+      
+      // Total = base + tax - discount
+      const paymentEstimate = baseAmount + taxTotal;
+      const finalAmount = paymentEstimate - discountTotal;
+      
+      // Calculate total advance
+      const cashAdv1 = parseFloat(prev.cashAdv1?.toString() || '0') || 0;
+      const ccUpiAdv = parseFloat(prev.ccUpiAdv?.toString() || '0') || 0;
+      const advance = parseFloat(prev.advance?.toString() || '0') || 0;
+      const totalAdvance = cashAdv1 + ccUpiAdv + advance;
+      
+      // Balance = finalAmount - totalAdvance
+      const balance = Math.max(0, finalAmount - totalAdvance);
+      
+      console.log('Updated payment calculation:', {
+        baseAmount, taxTotal, discountTotal, paymentEstimate, finalAmount, totalAdvance, balance
+      });
 
       return {
         ...prev,
         selectedItems: updatedItems,
-        paymentEstimate: total.toFixed(2), // Update payment estimate based on discounted item amounts
-        schAmt: schAmt.toFixed(2), // Update scheme amount based on item discounts
-        balance: balance.toFixed(2) // Recalculate balance
+        paymentEstimate: paymentEstimate.toFixed(2),
+        chequeAdv: taxTotal.toFixed(2),
+        schAmt: discountTotal.toFixed(2),
+        balance: balance.toFixed(2)
       };
     });
   };
 
-
-  // Helper functions (Keep these)
-  function generateOrderNo(): string {
-    // TODO: Implement proper order number generation logic
-    return `ORD${Date.now().toString().slice(-6)}`;
-  }
-
-  function generateBillNo(): string {
-    // TODO: Implement proper bill number generation logic
-    return `BILL${Date.now().toString().slice(-6)}`;
-  }
-
+  // Function to generate item code
   function generateItemCode(type: string): string {
-    // TODO: Implement proper item code generation logic
+    // Generate item code based on type
     const prefix = type === 'Frames' ? 'FRM' : (type === 'Sun Glasses' ? 'SUN' : 'LEN');
     return `${prefix}${Date.now().toString().slice(-4)}`;
   }
@@ -1277,19 +1613,46 @@ const OrderCardForm: React.FC = () => {
              </div>
              <div className="md:col-span-3 border p-4 rounded bg-white shadow-sm">
                   <h4 className="text-sm font-semibold text-gray-700 mb-2 border-b pb-1 text-blue-700">Selected Frames / Sun Glasses Details</h4>
-                  <table className="w-full border-collapse text-sm text-gray-700">
+                  {/* Add global style for number input arrows */}
+                  <style dangerouslySetInnerHTML={{
+                    __html: `
+                      /* Hide arrows for number inputs */
+                      input[type=number]::-webkit-inner-spin-button, 
+                      input[type=number]::-webkit-outer-spin-button { 
+                        -webkit-appearance: none; 
+                        margin: 0; 
+                      }
+                      input[type=number] {
+                        -moz-appearance: textfield;
+                      }
+                      
+                      /* Ensure table cells show full content */
+                      .full-content-cell input {
+                        width: 100% !important;
+                        min-width: 60px;
+                        box-sizing: border-box;
+                      }
+                      
+                      /* Ensure content is fully visible in cells */
+                      .full-width-table td, .full-width-table th {
+                        white-space: nowrap;
+                        overflow: visible;
+                      }
+                    `
+                  }} />
+                  <table className="w-full border-collapse text-sm text-gray-700 full-width-table" style={{ tableLayout: 'fixed' }}>
                       <thead>
                           <tr className="bg-blue-50">
-                              <th className="border border-gray-300 px-1 py-1 text-left text-xs w-8">S.I.</th>
-                              <th className="border border-gray-300 px-1 py-1 text-left text-xs w-16">Item Code</th>
-                              <th className="border border-gray-300 px-1 py-1 text-left text-xs w-40">Item Name</th>
-                              <th className="border border-gray-300 px-1 py-1 text-right text-xs w-14">Tax (%)</th>
-                              <th className="border border-gray-300 px-1 py-1 text-right text-xs w-14">Rate</th>
-                              <th className="border border-gray-300 px-1 py-1 text-right text-xs w-16">Amount</th>
-                              <th className="border border-gray-300 px-1 py-1 text-right text-xs w-10">Qty</th>
-                              <th className="border border-gray-300 px-1 py-1 text-right text-xs w-16">Discount Amt</th>
-                              <th className="border border-gray-300 px-1 py-1 text-right text-xs w-16">Discount %</th>
-                              <th className="border border-gray-300 px-1 py-1 text-xs w-10"></th>
+                              <th className="border border-gray-300 px-1 py-1 text-left text-xs" style={{ width: '40px' }}>S.I.</th>
+                              <th className="border border-gray-300 px-1 py-1 text-left text-xs" style={{ width: '90px' }}>Item Code</th>
+                              <th className="border border-gray-300 px-1 py-1 text-left text-xs" style={{ width: '150px' }}>Item Name</th>
+                              <th className="border border-gray-300 px-1 py-1 text-right text-xs" style={{ width: '70px' }}>Tax (%)</th>
+                              <th className="border border-gray-300 px-1 py-1 text-right text-xs" style={{ width: '80px' }}>Rate</th>
+                              <th className="border border-gray-300 px-1 py-1 text-right text-xs" style={{ width: '90px' }}>Amount</th>
+                              <th className="border border-gray-300 px-1 py-1 text-right text-xs" style={{ width: '60px' }}>Qty</th>
+                              <th className="border border-gray-300 px-1 py-1 text-right text-xs" style={{ width: '90px' }}>Discount Amt</th>
+                              <th className="border border-gray-300 px-1 py-1 text-right text-xs" style={{ width: '90px' }}>Discount %</th>
+                              <th className="border border-gray-300 px-1 py-1 text-xs" style={{ width: '70px' }}>Action</th>
                           </tr>
                       </thead>
                       <tbody>
@@ -1312,6 +1675,28 @@ const OrderCardForm: React.FC = () => {
                                             setFormData(prev => {
                                               const updatedItems = [...prev.selectedItems];
                                               updatedItems[index].taxPercent = value;
+                                              
+                                              // Calculate base price (before tax)
+                                              const baseRate = updatedItems[index].rate;
+                                              const qty = updatedItems[index].qty;
+                                              const baseTotal = baseRate * qty;
+                                              
+                                              // Calculate tax amount
+                                              const taxAmount = (baseTotal * value) / 100;
+                                              
+                                              // Calculate total amount with tax
+                                              const totalWithTax = baseTotal + taxAmount;
+                                              
+                                              // Apply any existing discount
+                                              const discountAmount = updatedItems[index].discountAmount || 0;
+                                              updatedItems[index].amount = parseFloat((totalWithTax - discountAmount).toFixed(2));
+                                              
+                                              // Update discount percentage if there's a discount
+                                              if (discountAmount > 0) {
+                                                updatedItems[index].discountPercent = totalWithTax === 0 ? 0 : 
+                                                  parseFloat(((discountAmount / totalWithTax) * 100).toFixed(2));
+                                              }
+                                              
                                               return { ...prev, selectedItems: updatedItems };
                                             });
                                           }}
@@ -1330,12 +1715,27 @@ const OrderCardForm: React.FC = () => {
                                             setFormData(prev => {
                                               const updatedItems = [...prev.selectedItems];
                                               updatedItems[index].rate = value;
-                                              // Recalculate amount based on updated rate and existing discount/qty
-                                              const itemTotal = value * updatedItems[index].qty;
+                                              
+                                              // Get quantity and tax percentage
+                                              const qty = updatedItems[index].qty;
+                                              const taxPercent = updatedItems[index].taxPercent || 0;
+                                              
+                                              // Calculate base total (without tax)
+                                              const baseTotal = value * qty;
+                                              
+                                              // Calculate tax amount
+                                              const taxAmount = (baseTotal * taxPercent) / 100;
+                                              
+                                              // Calculate total with tax
+                                              const totalWithTax = baseTotal + taxAmount;
+                                              
+                                              // Apply any existing discount
                                               const discountAmount = updatedItems[index].discountAmount || 0;
-                                              updatedItems[index].amount = itemTotal - discountAmount;
-                                               // Recalculate discount % based on new rate and fixed discount amount
-                                              updatedItems[index].discountPercent = itemTotal === 0 ? 0 : parseFloat(((discountAmount / itemTotal) * 100).toFixed(2));
+                                              updatedItems[index].amount = parseFloat((totalWithTax - discountAmount).toFixed(2));
+                                              
+                                              // Recalculate discount % based on new rate and fixed discount amount
+                                              updatedItems[index].discountPercent = totalWithTax === 0 ? 0 : 
+                                                parseFloat(((discountAmount / totalWithTax) * 100).toFixed(2));
 
                                               return { ...prev, selectedItems: updatedItems };
                                             });
@@ -1346,7 +1746,29 @@ const OrderCardForm: React.FC = () => {
                                           placeholder="0.00"
                                         />
                                       </td>
-                                      <td className="border border-gray-300 px-1 py-1 text-xs text-right">{item.amount.toFixed(2)}</td>
+                                      <td className="border border-gray-300 px-1 py-1 text-xs text-right">
+                                        {(() => {
+                                          // Calculate base amount (rate * qty)
+                                          const baseAmount = item.rate * item.qty;
+                                          // Calculate tax amount if tax percent is set
+                                          const taxAmount = item.taxPercent ? (baseAmount * item.taxPercent) / 100 : 0;
+                                          // Calculate total with tax
+                                          const totalWithTax = baseAmount + taxAmount;
+                                          // Apply discount if any
+                                          const finalAmount = totalWithTax - (item.discountAmount || 0);
+                                          // Update the item's amount in state
+                                          if (Math.abs(item.amount - finalAmount) > 0.01) { // Only update if there's a significant difference
+                                            setTimeout(() => {
+                                              setFormData(prev => {
+                                                const updatedItems = [...prev.selectedItems];
+                                                updatedItems[index].amount = parseFloat(finalAmount.toFixed(2));
+                                                return { ...prev, selectedItems: updatedItems };
+                                              });
+                                            }, 0);
+                                          }
+                                          return finalAmount.toFixed(2);
+                                        })()}
+                                      </td>
                                       <td className="border border-gray-300 px-1 py-1 text-xs text-right">
                                         <Input
                                           value={item.qty}
@@ -1356,12 +1778,27 @@ const OrderCardForm: React.FC = () => {
                                             setFormData(prev => {
                                               const updatedItems = [...prev.selectedItems];
                                               updatedItems[index].qty = value;
-                                              // Recalculate amount based on updated qty and existing discount/rate
-                                               const itemTotal = updatedItems[index].rate * value;
+                                              
+                                              // Get rate and tax percentage
+                                              const rate = updatedItems[index].rate;
+                                              const taxPercent = updatedItems[index].taxPercent || 0;
+                                              
+                                              // Calculate base total (without tax)
+                                              const baseTotal = rate * value;
+                                              
+                                              // Calculate tax amount
+                                              const taxAmount = (baseTotal * taxPercent) / 100;
+                                              
+                                              // Calculate total with tax
+                                              const totalWithTax = baseTotal + taxAmount;
+                                              
+                                              // Apply any existing discount
                                               const discountAmount = updatedItems[index].discountAmount || 0;
-                                              updatedItems[index].amount = itemTotal - discountAmount;
-                                                // Recalculate discount % based on new qty and fixed discount amount
-                                              updatedItems[index].discountPercent = itemTotal === 0 ? 0 : parseFloat(((discountAmount / itemTotal) * 100).toFixed(2));
+                                              updatedItems[index].amount = parseFloat((totalWithTax - discountAmount).toFixed(2));
+                                              
+                                              // Recalculate discount % based on new qty and fixed discount amount
+                                              updatedItems[index].discountPercent = totalWithTax === 0 ? 0 : 
+                                                parseFloat(((discountAmount / totalWithTax) * 100).toFixed(2));
                                               return { ...prev, selectedItems: updatedItems };
                                             });
                                           }}
@@ -1649,8 +2086,18 @@ const OrderCardForm: React.FC = () => {
           </div>
         </div>
       )}
+      {/* Save Order Button */}
+      <div className="mt-6 flex justify-end">
+        <Button 
+          type="button" 
+          variant="action" 
+          onClick={saveOrderToDatabase}
+        >
+          Save Order
+        </Button>
+      </div>
     </form>
   );
 };
 
-export default OrderCardForm; 
+export default OrderCardForm;
