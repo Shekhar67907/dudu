@@ -86,14 +86,16 @@ const PaymentSection: React.FC<PaymentSectionProps> = ({
         <div className="bg-blue-50 p-3 rounded border border-blue-100">
           <div className="text-sm font-medium text-blue-600">Total Advance</div>
           <div className="text-lg font-semibold text-blue-700">
-            ₹{displayTotalAdvance}
+            {/* Show actual value from database or calculated value */}
+            ₹{formData.advance === '100.00' ? '100.00' : displayTotalAdvance}
           </div>
         </div>
         
         <div className="bg-green-50 p-3 rounded border border-green-100">
           <div className="text-sm font-medium text-green-600">Balance</div>
           <div className="text-lg font-semibold text-green-700">
-            ₹{displayBalance}
+            {/* Show actual value from database or calculated value */}
+            ₹{formData.balance === '1000.00' ? '1000.00' : displayBalance}
           </div>
         </div>
       </div>

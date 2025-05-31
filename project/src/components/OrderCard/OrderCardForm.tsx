@@ -1453,78 +1453,53 @@ const OrderCardForm: React.FC = () => {
             throw new Error(`Failed to insert order items: ${itemsInsertError.message}`);
           }
           
-          // Get current payment values from database
-          const { data: currentPayment, error: fetchPaymentError } = await supabase
-            .from('order_payments')
-            .select('*')
-            .eq('order_id', existingOrder.id)
-            .single();
-
-          if (fetchPaymentError) {
-            console.error('Error fetching current payment:', fetchPaymentError);
-            throw new Error(`Failed to fetch current payment: ${fetchPaymentError.message}`);
-          }
-
-          // Convert form values to numbers
-          const newAdvanceCash = parseFloat(formData.cashAdv1 || '0');
-          const newAdvanceCardUpi = parseFloat(formData.ccUpiAdv || '0');
-          const newAdvanceOther = parseFloat(formData.advanceOther || '0');
+          // Convert advance values to numbers to ensure they're properly saved
+          const advanceCash = parseFloat(formData.cashAdv1 || '0');
+          const advanceCardUpi = parseFloat(formData.ccUpiAdv || '0');
+          const advanceOther = parseFloat(formData.advanceOther || '0');
           const finalAmount = parseFloat(formData.paymentEstimate || '0');
           
-          // Calculate new values by adding to existing values
-          const currentAdvanceCash = parseFloat(currentPayment.advance_cash) || 0;
-          const currentAdvanceCardUpi = parseFloat(currentPayment.advance_card_upi) || 0;
-          const currentAdvanceOther = parseFloat(currentPayment.advance_other) || 0;
-          
-          const advanceCash = currentAdvanceCash + newAdvanceCash;
-          const advanceCardUpi = currentAdvanceCardUpi + newAdvanceCardUpi;
-          const advanceOther = currentAdvanceOther + newAdvanceOther;
-          
           // Log the exact values being sent to the database
-          console.log('UPDATING PAYMENT VALUES:', {
-            current: {
-              advance_cash: currentAdvanceCash,
-              advance_card_upi: currentAdvanceCardUpi,
-              advance_other: currentAdvanceOther
-            },
-            new: {
-              advance_cash: newAdvanceCash,
-              advance_card_upi: newAdvanceCardUpi,
-              advance_other: newAdvanceOther
-            },
-            updated: {
-              advance_cash: advanceCash,
-              advance_card_upi: advanceCardUpi,
-              advance_other: advanceOther
+          console.log('PAYMENT VALUES BEING SAVED TO DATABASE:', {
+            advanceCash,
+            advanceCardUpi,
+            advanceOther,
+            finalAmount,
+            rawFormData: {
+              cashAdv1: formData.cashAdv1,
+              ccUpiAdv: formData.ccUpiAdv,
+              advanceOther: formData.advanceOther,
+              paymentEstimate: formData.paymentEstimate
             }
           });
           
+          // 4. Update payment record - only update base fields, let database handle generated columns
+          const { error: paymentUpdateError } = await supabase
+            .from('order_payments')
+            .update({
+              payment_estimate: orderData.payment.paymentEstimate,
+              tax_amount: orderData.payment.taxAmount,
+              discount_amount: orderData.payment.discountAmount,
+              final_amount: orderData.payment.finalAmount,
+              advance_cash: orderData.payment.advanceCash || 0,
+              advance_card_upi: orderData.payment.advanceCardUpi || 0,
+              advance_other: orderData.payment.advanceOther || 0,
+              schedule_amount: orderData.payment.scheduleAmount || 0,
+              updated_at: new Date().toISOString()
+            })
+            .eq('order_id', existingOrder.id)
+            .select('*');
+            
+          if (paymentUpdateError) {
+            console.error('Error updating payment:', paymentUpdateError);
+            throw new Error(`Failed to update payment: ${paymentUpdateError.message}`);
+          }
+          
+          console.log('Payment update successful. Verifying database values...');
+          
+          // Directly verify and fix the database values if needed
           try {
-            // Update payment record - only update base fields, let database handle generated columns
-            const { error: paymentUpdateError } = await supabase
-              .from('order_payments')
-              .update({
-                payment_estimate: finalAmount,
-                tax_amount: parseFloat(formData.taxAmount || '0'),
-                discount_amount: parseFloat(formData.schAmt || '0'),
-                final_amount: finalAmount,
-                advance_cash: advanceCash,
-                advance_card_upi: advanceCardUpi,
-                advance_other: advanceOther,
-                schedule_amount: parseFloat(formData.schAmt || '0'),
-                updated_at: new Date().toISOString()
-              })
-              .eq('order_id', existingOrder.id)
-              .select('*');
-              
-            if (paymentUpdateError) {
-              console.error('Error updating payment:', paymentUpdateError);
-              throw new Error(`Failed to update payment: ${paymentUpdateError.message}`);
-            }
-            
-            console.log('Payment update successful. Verifying database values...');
-            
-            // Verify the update was successful
+            // First, get the current values from the database
             const { data: currentPayment, error: fetchError } = await supabase
               .from('order_payments')
               .select('*')
@@ -1542,39 +1517,38 @@ const OrderCardForm: React.FC = () => {
                   
               console.log('Mismatch detected. Attempting direct SQL update...');
               
-              try {
-                // Use a direct SQL query to force update the values
-                const { data: updateResult, error: sqlError } = await supabase.rpc('update_order_payment_values', {
-                  p_order_id: existingOrder.id,
-                  p_advance_cash: advanceCash,
-                  p_advance_card_upi: advanceCardUpi,
-                  p_advance_other: advanceOther,
-                  p_final_amount: finalAmount
-                });
-                
-                if (sqlError) {
-                  console.error('SQL update error:', sqlError);
-                } else {
-                  console.log('Direct SQL update successful:', updateResult);
-                }
-              } catch (rpcError) {
-                console.error('RPC call failed:', rpcError);
+              // Use a direct SQL query to force update the values
+              const { data: updateResult, error: sqlError } = await supabase.rpc('update_order_payment_values', {
+                p_order_id: existingOrder.id,
+                p_advance_cash: advanceCash,
+                p_advance_card_upi: advanceCardUpi,
+                p_advance_other: advanceOther,
+                p_final_amount: finalAmount
+              });
+              
+              if (sqlError) {
+                console.error('SQL update error:', sqlError);
+              } else {
+                console.log('Direct SQL update successful:', updateResult);
               }
             }
-            
-            result = { 
-              success: true, 
-              message: 'Order updated successfully', 
-              orderId: existingOrder.id 
-            };
-            
-          } catch (error) {
-            console.error('Error during order update process:', error);
-            result = { 
-              success: false, 
-              message: error instanceof Error ? error.message : 'Unknown error during update' 
-            };
+          } catch (verificationError) {
+            console.error('Error during verification:', verificationError);
           }
+          
+          console.log('Successfully updated order and related records');
+          result = { 
+            success: true, 
+            message: 'Order updated successfully', 
+            orderId: existingOrder.id 
+          };
+        } catch (updateError) {
+          console.error('Error during order update process:', updateError);
+          result = { 
+            success: false, 
+            message: updateError instanceof Error ? updateError.message : 'Unknown error during update' 
+          };
+        }
       } else {
         // If no existing order, create a new one
         console.log('Creating new order');
