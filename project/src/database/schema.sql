@@ -199,3 +199,133 @@ BEGIN
         UNIQUE (prescription_id);
     END IF;
 END $$;
+-- Orders table to track customer purchases
+CREATE TABLE IF NOT EXISTS orders (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    prescription_id UUID NOT NULL,
+    order_no TEXT NOT NULL,
+    bill_no TEXT,
+    order_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    delivery_date DATE,
+    status TEXT DEFAULT 'Pending',
+    remarks TEXT,
+    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()),
+    updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()),
+    
+    -- Add foreign key constraint with CASCADE
+    CONSTRAINT fk_order_prescription
+      FOREIGN KEY (prescription_id) 
+      REFERENCES prescriptions(id) 
+      ON DELETE CASCADE,
+      
+    -- Add constraint for unique order number
+    CONSTRAINT unique_order_no UNIQUE (order_no)
+);
+
+-- Order items table for frames, sunglasses, and lenses
+CREATE TABLE IF NOT EXISTS order_items (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    order_id UUID NOT NULL,
+    si INTEGER NOT NULL,
+    item_type TEXT NOT NULL, -- 'frame', 'sunglass', 'lens'
+    item_code TEXT,
+    item_name TEXT NOT NULL,
+    
+    -- Fields for all items
+    rate NUMERIC(10, 2) NOT NULL,
+    qty INTEGER NOT NULL DEFAULT 1,
+    amount NUMERIC(10, 2) NOT NULL,
+    tax_percent NUMERIC(5, 2) DEFAULT 0,
+    discount_percent NUMERIC(5, 2) DEFAULT 0,
+    discount_amount NUMERIC(10, 2) DEFAULT 0,
+    
+    -- Lens-specific fields (can be NULL for frames/sunglasses)
+    brand_name TEXT,
+    index TEXT,
+    coating TEXT,
+    
+    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()),
+    updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()),
+    
+    -- Add foreign key constraint with CASCADE
+    CONSTRAINT fk_order_item
+      FOREIGN KEY (order_id) 
+      REFERENCES orders(id) 
+      ON DELETE CASCADE
+);
+
+-- Order payments table
+CREATE TABLE IF NOT EXISTS order_payments (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    order_id UUID NOT NULL,
+    
+    -- Payment calculation fields
+    payment_estimate NUMERIC(10, 2) NOT NULL,
+    tax_amount NUMERIC(10, 2) DEFAULT 0,
+    discount_amount NUMERIC(10, 2) DEFAULT 0,
+    final_amount NUMERIC(10, 2) NOT NULL,
+    
+    -- Advance payment fields
+    advance_cash NUMERIC(10, 2) DEFAULT 0,
+    advance_card_upi NUMERIC(10, 2) DEFAULT 0,
+    advance_other NUMERIC(10, 2) DEFAULT 0,
+    total_advance NUMERIC(10, 2) GENERATED ALWAYS AS (
+        COALESCE(advance_cash, 0) + 
+        COALESCE(advance_card_upi, 0) + 
+        COALESCE(advance_other, 0)
+    ) STORED,
+    
+    -- Balance is final_amount minus total_advance (never negative)
+    balance NUMERIC(10, 2) GENERATED ALWAYS AS (
+        GREATEST(0, final_amount - (
+            COALESCE(advance_cash, 0) + 
+            COALESCE(advance_card_upi, 0) + 
+            COALESCE(advance_other, 0)
+        ))
+    ) STORED,
+    
+    -- Schedule amount
+    schedule_amount NUMERIC(10, 2) DEFAULT 0,
+    
+    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()),
+    updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()),
+    
+    -- Add foreign key constraint with CASCADE
+    CONSTRAINT fk_order_payment
+      FOREIGN KEY (order_id) 
+      REFERENCES orders(id) 
+      ON DELETE CASCADE,
+      
+    -- One payment record per order
+    CONSTRAINT uq_order_payment_order_id 
+      UNIQUE (order_id)
+);
+
+-- Create indexes for better query performance
+CREATE INDEX IF NOT EXISTS idx_orders_prescription_id ON orders(prescription_id);
+CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
+CREATE INDEX IF NOT EXISTS idx_order_payments_order_id ON order_payments(order_id);
+
+-- Disable Row Level Security (RLS) as requested for testing
+ALTER TABLE orders DISABLE ROW LEVEL SECURITY;
+ALTER TABLE order_items DISABLE ROW LEVEL SECURITY;
+ALTER TABLE order_payments DISABLE ROW LEVEL SECURITY;
+
+-- Create policies to allow public access to all tables (for testing)
+CREATE POLICY "Enable public access to all orders"
+ON orders FOR ALL
+TO public
+USING (true)
+WITH CHECK (true);
+
+CREATE POLICY "Enable public access to all order_items"
+ON order_items FOR ALL
+TO public
+USING (true)
+WITH CHECK (true);
+
+CREATE POLICY "Enable public access to all order_payments"
+ON order_payments FOR ALL
+TO public
+USING (true)
+WITH CHECK (true);

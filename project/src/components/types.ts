@@ -143,7 +143,9 @@ export interface PrescriptionFormData {
   balance: string;
   cashAdv1: string;
   ccUpiAdv: string;
-  chequeAdv: string;
+  chequeAdv: string;  // Keeping for backward compatibility
+  advanceOther: string;  // New field to separate from chequeAdv
+  taxAmount: string;  // New field specifically for tax amount
   cashAdv2: string;
   cashAdv2Date: string;
   applyDiscount: string;

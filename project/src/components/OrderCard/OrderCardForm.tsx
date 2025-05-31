@@ -23,6 +23,34 @@ interface SearchSuggestion extends PrescriptionFormData {
   status: string; // Make status required to match PrescriptionFormData
 }
 
+// Helper function to generate a unique prescription number
+const generateUniquePrescriptionNumber = (): string => {
+  const now = new Date();
+  const year = now.getFullYear().toString().substring(2); // Get last 2 digits of year
+  const month = (now.getMonth() + 1).toString().padStart(2, '0');
+  const day = now.getDate().toString().padStart(2, '0');
+  const random = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+  
+  return `P${year}${month}-${day}${random}`;
+};
+
+// Helper function to generate a unique reference number
+// If prescriptionNumber is provided, use it as the reference number
+const generateUniqueReferenceNumber = (prescriptionNumber?: string): string => {
+  // If a prescription number is provided, use it as the reference number
+  if (prescriptionNumber) {
+    return prescriptionNumber;
+  }
+  
+  // Otherwise generate a new unique reference number
+  const now = new Date();
+  const year = now.getFullYear().toString().substring(2); // Get last 2 digits of year
+  const month = (now.getMonth() + 1).toString().padStart(2, '0');
+  const random = Math.floor(Math.random() * 100000).toString().padStart(5, '0');
+  
+  return `REF${year}${month}-${random}`;
+};
+
 // Helper function to format date for input fields
 const formatDateForInput = (date: string | null | undefined, format: 'date' | 'datetime-local' = 'date'): string => {
   if (!date) return '';
@@ -43,10 +71,14 @@ const formatDateForInput = (date: string | null | undefined, format: 'date' | 'd
 };
 
 // Initial form state with proper nested structure and default datetime-local format
-// Define this before the component where it's used
+// Generate a unique prescription number for initial state
+const initialPrescriptionNumber = generateUniquePrescriptionNumber();
+
+// Initial state for the form using PrescriptionFormData type
 const initialFormState: PrescriptionFormData = {
-  prescriptionNo: '',
-  referenceNo: '',
+  // Common/Customer fields
+  prescriptionNo: initialPrescriptionNumber,
+  referenceNo: generateUniqueReferenceNumber(initialPrescriptionNumber), // Use prescription number as reference number by default
   currentDateTime: formatDateForInput(getTodayDate(), 'datetime-local'),
   deliveryDateTime: formatDateForInput(getNextMonthDate(), 'datetime-local'),
   date: formatDateForInput(getTodayDate()), // Using date format
@@ -102,6 +134,8 @@ const initialFormState: PrescriptionFormData = {
   cashAdv1: '0.00',
   ccUpiAdv: '0.00',
   chequeAdv: '0.00',
+  advanceOther: '0.00',
+  taxAmount: '0.00',
   cashAdv2: '0.00',
   cashAdv2Date: formatDateForInput(getTodayDate(), 'datetime-local'),
 
@@ -260,19 +294,34 @@ const OrderCardForm: React.FC = () => {
       }
   }, [formData.rightEye.dv.rpd, formData.leftEye.dv.lpd]);
 
-  // Payment Section: Auto-calculate Payment Estimate and Sch Amt from selectedItems
+  // Payment Section: Auto-calculate Payment Estimate, Tax Amount, and Sch Amt from selectedItems
   useEffect(() => {
-    // Payment Estimate: sum of (rate * qty) for all items
-    const paymentEstimate = formData.selectedItems.reduce((sum, item) => sum + (item.rate * item.qty), 0);
+    // Calculate base amount: sum of (rate * qty) for all items
+    const baseAmount = formData.selectedItems.reduce((sum, item) => sum + (item.rate * item.qty), 0);
+    
+    // Calculate total tax amount from all items
+    const totalTaxAmount = formData.selectedItems.reduce((sum, item) => {
+      const itemBaseAmount = item.rate * item.qty;
+      const taxAmount = (itemBaseAmount * (item.taxPercent || 0)) / 100;
+      return sum + taxAmount;
+    }, 0);
+    
+    // Payment Estimate: base amount + tax amount
+    const paymentEstimate = baseAmount + totalTaxAmount;
+    
     // Sch Amt: sum of all discountAmount fields
     const schAmt = formData.selectedItems.reduce((sum, item) => sum + (item.discountAmount || 0), 0);
+    
     // Advance: user input, default to 0 if empty
     const advance = formData.advance === '' ? 0 : parseFloat(formData.advance);
+    
     // Balance: Payment Estimate - Sch Amt - Advance
     const balance = paymentEstimate - schAmt - advance;
+    
     setFormData(prev => ({
       ...prev,
       paymentEstimate: paymentEstimate.toFixed(2),
+      taxAmount: totalTaxAmount.toFixed(2),
       schAmt: schAmt.toFixed(2),
       balance: balance.toFixed(2)
     }));
@@ -304,14 +353,15 @@ const OrderCardForm: React.FC = () => {
 
         console.log(`Searching for ${column} containing: ${query}`);
         
-        // Use Supabase to query the database with join to eye_prescriptions and prescription_remarks
+        // Use Supabase to query the database with join to eye_prescriptions, prescription_remarks, orders, order_items, and order_payments
         console.log(`Executing query for ${column}=${query}`);
         let { data, error } = await supabase
           .from('prescriptions')
           .select(`
             *,
             eye_prescriptions(id, prescription_id, eye_type, vision_type, sph, cyl, ax, add_power, vn, rpd, lpd),
-            prescription_remarks(*)
+            prescription_remarks(*),
+            orders(*, order_items(*), order_payments(*))
           `)
           .eq(column, query) // For exact match
           .limit(5);
@@ -323,7 +373,8 @@ const OrderCardForm: React.FC = () => {
             .select(`
               *,
               eye_prescriptions(id, prescription_id, eye_type, vision_type, sph, cyl, ax, add_power, vn, rpd, lpd),
-              prescription_remarks(*)
+              prescription_remarks(*),
+              orders(*, order_items(*), order_payments(*))
             `)
             .ilike(column, `%${query}%`) // For partial match
             .limit(5);
@@ -354,9 +405,97 @@ const OrderCardForm: React.FC = () => {
       
       // Transformation of database results to match your interface including eye prescriptions
       const transformedData: SearchSuggestion[] = data.map((item: any) => {
-        // Check if eye_prescriptions and prescription_remarks arrays exist
+        // When we select this suggestion, we want to preserve the original prescription number and reference number
+        // rather than generating new ones
+        // Check if eye_prescriptions, prescription_remarks, and orders arrays exist
         const eyePrescriptions = item.eye_prescriptions || [];
         const prescriptionRemarks = item.prescription_remarks || [];
+        const orders = item.orders || [];
+        
+        // Get the most recent order (if any)
+        const latestOrder = orders.length > 0 ? orders[0] : null;
+        
+        // Get order items and payments from the latest order
+        const orderItems = latestOrder?.order_items || [];
+        const orderPayment = latestOrder?.order_payments?.[0] || null;
+        
+        // Log the raw order payment object to inspect all available fields
+        console.log('RAW ORDER PAYMENT OBJECT WITH ALL FIELDS:', {
+          orderPayment,
+          allKeys: orderPayment ? Object.keys(orderPayment) : [],
+          allValues: orderPayment ? Object.values(orderPayment) : []
+        });
+        
+        console.log('RAW ORDER PAYMENT DATA FROM DB:', orderPayment);
+        
+        // Extract payment values for easier access
+        const paymentEstimate = orderPayment?.payment_estimate || 0;
+        const taxAmount = orderPayment?.tax_amount || 0;
+        const scheduleAmount = orderPayment?.schedule_amount || 0;
+        const advanceCash = orderPayment?.advance_cash || 0;
+        const advanceCardUpi = orderPayment?.advance_card_upi || 0;
+        const advanceOther = orderPayment?.advance_other || 0;
+        
+        // Use stored database values for total_advance and balance instead of recalculating
+        const totalAdvance = orderPayment?.total_advance || 0;
+        const balance = orderPayment?.balance || 0;
+        
+        // Log the order payment data to identify the issue
+        console.log('DETAILED ORDER PAYMENT VALUES FROM DATABASE:', {
+          raw: orderPayment,
+          rawFields: {
+            payment_estimate: orderPayment?.payment_estimate,
+            tax_amount: orderPayment?.tax_amount,
+            schedule_amount: orderPayment?.schedule_amount,
+            advance_cash: orderPayment?.advance_cash,
+            advance_card_upi: orderPayment?.advance_card_upi,
+            advance_other: orderPayment?.advance_other,
+            total_advance: orderPayment?.total_advance,  // This should be 100.00 based on your screenshot
+            balance: orderPayment?.balance,  // This should be 1000.00 based on your screenshot
+          },
+          
+          // Extracted values
+          extractedValues: {
+            paymentEstimate,
+            taxAmount,
+            scheduleAmount,
+            advanceCash,
+            advanceCardUpi,
+            advanceOther,
+            totalAdvance,
+            balance
+          }
+        });
+        
+        // Add these payment values to the suggestion object so they can be used when populating the form
+        item = {
+          ...item,
+          paymentEstimate: paymentEstimate.toString(),
+          taxAmount: taxAmount.toString(),
+          schAmt: scheduleAmount.toString(),
+          cashAdv1: advanceCash.toString(),
+          ccUpiAdv: advanceCardUpi.toString(),
+          advanceOther: advanceOther.toString(), // Map to the new field
+          chequeAdv: '0', // Set to 0 for backward compatibility
+          advance: totalAdvance.toString(),
+          balance: balance.toString()
+        };
+        
+        // Log the full structure of the payment data for debugging
+        console.log('Found order data:', { 
+          latestOrder, 
+          orderItems, 
+          orderPayment,
+          paymentDetails: {
+            paymentEstimate,
+            scheduleAmount,
+            advanceCash,
+            advanceCardUpi,
+            advanceOther,
+            totalAdvance,
+            balance
+          }
+        });
         
         // Helper function to find eye prescription data
         const findEyeData = (eyeType: string, visionType: string, field: string, defaultValue: string = '') => {
@@ -536,20 +675,40 @@ const OrderCardForm: React.FC = () => {
             antiRadiationLenses: hasRemarkType('anti_radiation_lenses'),
             underCorrected: hasRemarkType('under_corrected')
           },
-          selectedItems: [],
-          orderStatus: 'Processing',
-          orderStatusDate: '',
+          // Map the order items from the latest order (if any)
+          selectedItems: orderItems.map((item: any) => ({
+            si: item.si || 0,
+            itemCode: item.item_code || '',
+            itemName: item.item_name || '',
+            unit: 'PCS', // Default unit
+            taxPercent: item.tax_percent || 0,
+            rate: item.rate || 0,
+            qty: item.qty || 1,
+            amount: item.amount || 0,
+            discountAmount: item.discount_amount || 0,
+            discountPercent: item.discount_percent || 0,
+            brandName: item.brand_name || '',
+            index: item.index || '',
+            coating: item.coating || ''
+          })) || [],
+          
+          // Order status fields
+          orderStatus: latestOrder?.status || 'Processing',
+          orderStatusDate: latestOrder?.order_date || '',
           retestAfter: item.retest_after || '',
-          billNo: '',
-          // Payment related fields
-          paymentEstimate: '0.00',
-          schAmt: '0.00',
-          advance: '0.00',
-          balance: '0.00',
-          cashAdv1: '0.00',
-          ccUpiAdv: '0.00',
-          chequeAdv: '0.00',
-          cashAdv2: '0.00',
+          billNo: latestOrder?.bill_no || '',
+          
+          // Payment related fields - populate from orderPayment if available
+          paymentEstimate: orderPayment?.payment_estimate?.toString() || '0.00',
+          schAmt: orderPayment?.schedule_amount?.toString() || '0.00',
+          // Use total_advance directly from the database instead of recalculating
+          advance: orderPayment?.total_advance?.toString() || '0.00',
+          // Use balance directly from the database instead of recalculating
+          balance: orderPayment?.balance?.toString() || '0.00',
+          cashAdv1: orderPayment?.advance_cash?.toString() || '0.00',
+          ccUpiAdv: orderPayment?.advance_card_upi?.toString() || '0.00',
+          chequeAdv: orderPayment?.advance_other?.toString() || '0.00',
+          cashAdv2: '0.00', // Not stored in database?
           cashAdv2Date: '',
           // Discount fields
           applyDiscount: '',
@@ -564,7 +723,14 @@ const OrderCardForm: React.FC = () => {
           manualEntryItemAmount: 0,
           others: '',
           currentDateTime: '',
-          deliveryDateTime: ''
+          deliveryDateTime: '',
+          // Add the missing required properties
+          advanceOther: orderPayment?.advance_other?.toString() || '0.00',
+          taxAmount: orderItems.reduce((total: number, item: any) => {
+            // Calculate tax amount based on items
+            const itemTaxAmount = (item.amount || 0) * (item.tax_percent || 0) / 100;
+            return total + itemTaxAmount;
+          }, 0).toString() || '0.00'
         };
       });
           
@@ -586,133 +752,197 @@ const OrderCardForm: React.FC = () => {
     const { name, value } = e.target;
 
     // Update the form data immediately
-      setFormData(prev => ({
-        ...prev,
-        [name]: value
-      }));
+    setFormData(prev => ({
+      ...prev,
+      [name]: value
+    }));
 
     // Set the active field and trigger search
     setActiveField(name);
     searchPrescriptions(value, name);
   };
-
+  
   // Handle suggestion selection
   const handleSuggestionSelect = (suggestion: SearchSuggestion) => {
+    let prescriptionNumber = suggestion.prescriptionNo;
+    let referenceNumber = suggestion.referenceNo;
+    
+    try {
+      // Determine if this is a new order or loading an existing prescription
+      const isNewOrder = !suggestion.id; // If no ID, it's a new order
+      
+      // For prescription number and reference number:
+      // 1. If it's an existing prescription (has ID), use the original values
+      // 2. If it's a new order, generate new unique numbers
+      prescriptionNumber = isNewOrder ? generateUniquePrescriptionNumber() : suggestion.prescriptionNo;
+      
+      // By default, use prescription number as reference number unless an explicit reference number exists
+      if (isNewOrder) {
+        // For new orders, default to using prescription number as reference
+        referenceNumber = prescriptionNumber;
+      } else if (suggestion.referenceNo && suggestion.referenceNo !== suggestion.prescriptionNo) {
+        // If there's an existing reference number that's different from prescription number, use it
+        referenceNumber = suggestion.referenceNo;
+      } else {
+        // Otherwise default to using prescription number
+        referenceNumber = prescriptionNumber;
+      }
+      
+      // Log selected items and payment details for debugging
+      console.log('Populating form with order data:', {
+        selectedItems: suggestion.selectedItems || [],
+        paymentData: {
+          paymentEstimate: suggestion.paymentEstimate,
+          schAmt: suggestion.schAmt,
+          advance: suggestion.advance,
+          cashAdv1: suggestion.cashAdv1,
+          ccUpiAdv: suggestion.ccUpiAdv,
+          chequeAdv: suggestion.chequeAdv
+        }
+      });
+      
+      console.log('Order details:', {
+        isNewOrder,
+        prescriptionNumber,
+        referenceNumber,
+        suggestionId: suggestion.id
+      });
+    } catch (error) {
+      console.error('Error in handleSuggestionSelect:', error instanceof Error ? error.message : 'Unknown error');
+    }
+    
     // Populate form data with the selected suggestion's data
-    setFormData(prevData => ({
-      ...prevData,
-      // Personal Info
-      name: suggestion.name || '',
-      // Ensure age is treated as string for the input value
-      age: suggestion.age?.toString() || '',
-      gender: suggestion.gender || 'Male',
-      customerCode: suggestion.customerCode || '',
-      // Format dates for datetime-local input if necessary
-      birthDay: formatDateForInput(suggestion.birthDay), // Assuming birthDay is a date string
-      marriageAnniversary: formatDateForInput(suggestion.marriageAnniversary), // Assuming marriageAnniversary is a date string
-      address: suggestion.address || '',
-      city: suggestion.city || '',
-      state: suggestion.state || '',
-      pinCode: suggestion.pinCode || '',
-      phoneLandline: suggestion.phoneLandline || '',
-      mobileNo: suggestion.mobileNo || '',
-      email: suggestion.email || '',
-      ipd: suggestion.ipd || '',
-      prescribedBy: suggestion.prescribedBy || '', // Assuming prescribedBy is on the Prescription object
+    setFormData(prevData => {
+      // Get order items from the suggestion (if any)
+      const orderItems = suggestion.selectedItems || [];
+      
+      // Create a new object with all the essential data
+      const updatedData = {
+        ...prevData,
+        // Override with the generated prescription number and reference number
+        prescriptionNo: prescriptionNumber,
+        referenceNo: referenceNumber,
+        // Personal Info
+        name: suggestion.name || '',
+        // Ensure age is treated as string for the input value
+        age: suggestion.age?.toString() || '',
+        mobileNo: suggestion.mobileNo || '',
+        email: suggestion.email || '',
+        address: suggestion.address || '',
+        // Format dates for datetime-local input if necessary
+        birthDay: formatDateForInput(suggestion.birthDay), // Assuming birthDay is a date string
+        marriageAnniversary: formatDateForInput(suggestion.marriageAnniversary), // Assuming marriageAnniversary is a date string
+        city: suggestion.city || '',
+        state: suggestion.state || '',
+        pinCode: suggestion.pinCode || '',
+        phoneLandline: suggestion.phoneLandline || '',
+        ipd: suggestion.ipd || '',
+        prescribedBy: suggestion.prescribedBy || '', // Assuming prescribedBy is on the Prescription object
+        
+        // Populate the order items (frames/sun glasses)
+        selectedItems: orderItems,
+        
+        // Populate payment details from the extracted values from database
+        paymentEstimate: parseFloat(suggestion.paymentEstimate || '0').toFixed(2) || '0.00',
+        schAmt: parseFloat(suggestion.schAmt || '0').toFixed(2) || '0.00',
+        // Set individual advance payments
+        cashAdv1: parseFloat(suggestion.cashAdv1 || '0').toFixed(2) || '0.00',
+        ccUpiAdv: parseFloat(suggestion.ccUpiAdv || '0').toFixed(2) || '0.00',
+        chequeAdv: parseFloat(suggestion.chequeAdv || '0').toFixed(2) || '0.00',
+        // Set the total advance
+        advance: (parseFloat(suggestion.cashAdv1 || '0') + 
+                 parseFloat(suggestion.ccUpiAdv || '0') + 
+                 parseFloat(suggestion.chequeAdv || '0')).toFixed(2),
+        // Calculate and set the balance
+        balance: (parseFloat(suggestion.paymentEstimate || '0') - 
+                (parseFloat(suggestion.cashAdv1 || '0') + 
+                 parseFloat(suggestion.ccUpiAdv || '0') + 
+                 parseFloat(suggestion.chequeAdv || '0'))).toFixed(2),
+        
+        // Note: currentDateTime and deliveryDateTime are not part of the search result typically,
+        // so we keep the existing values or generate new ones as per initial state logic.
+        currentDateTime: prevData.currentDateTime, // Keep existing
+        deliveryDateTime: prevData.deliveryDateTime, // Keep existing
+        class: suggestion.class || '', // Assuming class is on the Prescription object
+        bookingBy: suggestion.bookingBy || '', // Assuming bookingBy is on the Prescription object
+        billed: suggestion.billed || false, // Assuming billed is on the Prescription object
 
-      // Order Info
-      prescriptionNo: suggestion.prescriptionNo || '',
-      referenceNo: suggestion.referenceNo || '',
-      // Note: currentDateTime and deliveryDateTime are not part of the search result typically,
-      // so we keep the existing values or generate new ones as per initial state logic.
-      // If you intend to load these from search, update the SearchSuggestion interface and this mapping.
-      currentDateTime: prevData.currentDateTime, // Keep existing
-      deliveryDateTime: prevData.deliveryDateTime, // Keep existing
-      class: suggestion.class || '', // Assuming class is on the Prescription object
-      bookingBy: suggestion.bookingBy || '', // Assuming bookingBy is on the Prescription object
-      billed: suggestion.billed || false, // Assuming billed is on the Prescription object
-
-      // Prescription Data (Ensure nested structure is handled)
-      rightEye: {
-        ...prevData.rightEye, // Preserve other rightEye properties if any
-        dv: {
-          ...prevData.rightEye.dv, // Preserve other rightEye DV properties if any
-          sph: suggestion.rightEye?.dv?.sph || '',
-          cyl: suggestion.rightEye?.dv?.cyl || '',
-          ax: suggestion.rightEye?.dv?.ax || '',
-          add: suggestion.rightEye?.dv?.add || '', // maps to add_power in the database
-          vn: suggestion.rightEye?.dv?.vn || '6/', // Default if empty
-          rpd: suggestion.rightEye?.dv?.rpd || ''
+        // Prescription Data (Ensure nested structure is handled)
+        rightEye: {
+          ...prevData.rightEye, // Preserve other rightEye properties if any
+          dv: {
+            ...prevData.rightEye.dv, // Preserve other rightEye DV properties if any
+            sph: suggestion.rightEye?.dv?.sph || '',
+            cyl: suggestion.rightEye?.dv?.cyl || '',
+            ax: suggestion.rightEye?.dv?.ax || '',
+            add: suggestion.rightEye?.dv?.add || '', // maps to add_power in the database
+            vn: suggestion.rightEye?.dv?.vn || '6/', // Default if empty
+            rpd: suggestion.rightEye?.dv?.rpd || ''
+          },
+          nv: {
+            ...prevData.rightEye.nv, // Preserve other rightEye NV properties if any
+            sph: suggestion.rightEye?.nv?.sph || '',
+            cyl: suggestion.rightEye?.nv?.cyl || '',
+            ax: suggestion.rightEye?.nv?.ax || '',
+            add: suggestion.rightEye?.nv?.add || '', // maps to add_power in the database
+            vn: suggestion.rightEye?.nv?.vn || 'N' // Default if empty
+          }
         },
-        nv: {
-          ...prevData.rightEye.nv, // Preserve other rightEye NV properties if any
-          sph: suggestion.rightEye?.nv?.sph || '',
-          cyl: suggestion.rightEye?.nv?.cyl || '',
-          ax: suggestion.rightEye?.nv?.ax || '',
-          add: suggestion.rightEye?.nv?.add|| '',
-          vn: suggestion.rightEye?.nv?.vn || 'N' // Default if empty
-        }
-      },
-      leftEye: {
-        ...prevData.leftEye, // Preserve other leftEye properties if any
-        dv: {
-          ...prevData.leftEye.dv, // Preserve other leftEye DV properties if any
-          sph: suggestion.leftEye?.dv?.sph || '',
-          cyl: suggestion.leftEye?.dv?.cyl || '',
-          ax: suggestion.leftEye?.dv?.ax || '',
-          add: suggestion.leftEye?.dv?.add || '',
-          vn: suggestion.leftEye?.dv?.vn || '6/', // Default if empty
-          lpd: suggestion.leftEye?.dv?.lpd || ''
+        leftEye: {
+          ...prevData.leftEye, // Preserve other leftEye properties if any
+          dv: {
+            ...prevData.leftEye.dv, // Preserve other leftEye DV properties if any
+            sph: suggestion.leftEye?.dv?.sph || '',
+            cyl: suggestion.leftEye?.dv?.cyl || '',
+            ax: suggestion.leftEye?.dv?.ax || '',
+            add: suggestion.leftEye?.dv?.add || '', // maps to add_power in the database
+            vn: suggestion.leftEye?.dv?.vn || '6/', // Default if empty
+            lpd: suggestion.leftEye?.dv?.lpd || ''
+          },
+          nv: {
+            ...prevData.leftEye.nv, // Preserve other leftEye NV properties if any
+            sph: suggestion.leftEye?.nv?.sph || '',
+            cyl: suggestion.leftEye?.nv?.cyl || '',
+            ax: suggestion.leftEye?.nv?.ax || '',
+            add: suggestion.leftEye?.nv?.add || '', // maps to add_power in the database
+            vn: suggestion.leftEye?.nv?.vn || 'N' // Default if empty
+          }
         },
-        nv: {
-          ...prevData.leftEye.nv, // Preserve other leftEye NV properties if any
-          sph: suggestion.leftEye?.nv?.sph || '',
-          cyl: suggestion.leftEye?.nv?.cyl || '',
-          ax: suggestion.leftEye?.nv?.ax || '',
-          add: suggestion.leftEye?.nv?.add || '',
-          vn: suggestion.leftEye?.nv?.vn || 'N' // Default if empty
-        }
-      },
-      balanceLens: suggestion.balanceLens || false, // Assuming balanceLens is on the Prescription object
-      remarks: suggestion.remarks || { // Initialize remarks as an object if null/undefined from search
-        forConstantUse: false,
-        forDistanceVisionOnly: false,
-        forNearVisionOnly: false,
-        separateGlasses: false,
-        biFocalLenses: false,
-        progressiveLenses: false,
-        antiReflectionLenses: false,
-        antiRadiationLenses: false,
-        underCorrected: false
-      },
-      orderStatus: suggestion.orderStatus || 'Processing', // Assuming orderStatus is on the Prescription object
-      orderStatusDate: formatDateForInput(suggestion.orderStatusDate), // Assuming orderStatusDate is on the Prescription object
-      retestAfter: formatDateForInput(suggestion.retestAfter), // Assuming retestAfter is on the Prescription object
-      billNo: suggestion.billNo || '', // Assuming billNo is on the Prescription object
-      // Keep other fields as they are not typically loaded from a basic prescription search
-      selectedItems: prevData.selectedItems,
-      paymentEstimate: prevData.paymentEstimate,
-      schAmt: prevData.schAmt,
-      advance: prevData.advance,
-      balance: prevData.balance,
-      cashAdv1: prevData.cashAdv1,
-      ccUpiAdv: prevData.ccUpiAdv,
-      chequeAdv: prevData.chequeAdv,
-      cashAdv2: prevData.cashAdv2,
-      cashAdv2Date: prevData.cashAdv2Date,
-      applyDiscount: prevData.applyDiscount,
-      discountType: prevData.discountType,
-      discountValue: prevData.discountValue,
-      discountReason: prevData.discountReason,
-      manualEntryType: prevData.manualEntryType,
-      manualEntryItemName: prevData.manualEntryItemName,
-      manualEntryRate: prevData.manualEntryRate,
-      manualEntryQty: prevData.manualEntryQty,
-      manualEntryItemAmount: prevData.manualEntryItemAmount,
-      others: suggestion.others || '', // Assuming others is on the Prescription object
-      status: suggestion.status || '', // Assuming status is on the Prescription object
-
-    }));
+        balanceLens: suggestion.balanceLens || false, // Assuming balanceLens is on the Prescription object
+        remarks: {
+          ...prevData.remarks, // Preserve other remark properties if any
+          // Map remarks from the suggestion or use existing values
+          forConstantUse: suggestion.remarks?.forConstantUse || prevData.remarks.forConstantUse || false,
+          forDistanceVisionOnly: suggestion.remarks?.forDistanceVisionOnly || prevData.remarks.forDistanceVisionOnly || false,
+          forNearVisionOnly: suggestion.remarks?.forNearVisionOnly || prevData.remarks.forNearVisionOnly || false,
+          separateGlasses: suggestion.remarks?.separateGlasses || prevData.remarks.separateGlasses || false,
+          biFocalLenses: suggestion.remarks?.biFocalLenses || prevData.remarks.biFocalLenses || false,
+          progressiveLenses: suggestion.remarks?.progressiveLenses || prevData.remarks.progressiveLenses || false,
+          antiReflectionLenses: suggestion.remarks?.antiReflectionLenses || prevData.remarks.antiReflectionLenses || false,
+          antiRadiationLenses: suggestion.remarks?.antiRadiationLenses || prevData.remarks.antiRadiationLenses || false,
+          underCorrected: suggestion.remarks?.underCorrected || prevData.remarks.underCorrected || false
+        },
+        
+        // For form elements that are not directly populated from the API, preserve existing values
+        orderStatus: suggestion.orderStatus || prevData.orderStatus,
+        orderStatusDate: suggestion.orderStatusDate || prevData.orderStatusDate,
+        retestAfter: suggestion.retestAfter || prevData.retestAfter,
+        billNo: suggestion.billNo || prevData.billNo,
+        // Discount fields
+        applyDiscount: prevData.applyDiscount,
+        discountType: prevData.discountType, // Corrected field name
+        discountReason: prevData.discountReason,
+        manualEntryType: prevData.manualEntryType,
+        manualEntryItemName: prevData.manualEntryItemName,
+        manualEntryRate: prevData.manualEntryRate,
+        manualEntryQty: prevData.manualEntryQty,
+        manualEntryItemAmount: prevData.manualEntryItemAmount,
+        others: suggestion.others || '', // Assuming others is on the Prescription object
+        status: suggestion.status || '' // Assuming status is on the Prescription object
+      };
+      
+      return updatedData;
+    });
     setActiveField(null);
     setSuggestions([]);
      setNotification({
@@ -723,7 +953,7 @@ const OrderCardForm: React.FC = () => {
   };
 
   // Keep existing handleChange for non-search fields and nested updates
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>): void => {
     const { name, value } = e.target;
 
     // If the changed field is one of the search fields, use the dedicated handler
@@ -843,6 +1073,44 @@ const OrderCardForm: React.FC = () => {
 
     // Call the main handleChange with the synthetic event (this will now route back to handleSearchInputChange for search fields if applicable)
     handleChange(syntheticEvent);
+    
+    // After handling the change, check if this is a payment field and recalculate balance if needed
+    if (['paymentEstimate', 'cashAdv1', 'ccUpiAdv', 'chequeAdv'].includes(name)) {
+      updateBalanceAfterPaymentChange();
+    }
+  };
+  
+  // Function to recalculate advance and balance whenever payment fields change
+  const updateBalanceAfterPaymentChange = () => {
+    setFormData(prev => {
+      // Get current payment values - ensure empty strings are treated as 0
+      const paymentEstimate = prev.paymentEstimate === '' ? 0 : parseFloat(prev.paymentEstimate || '0');
+      const cashAdv1 = prev.cashAdv1 === '' ? 0 : parseFloat(prev.cashAdv1 || '0');
+      const ccUpiAdv = prev.ccUpiAdv === '' ? 0 : parseFloat(prev.ccUpiAdv || '0');
+      const chequeAdv = prev.chequeAdv === '' ? 0 : parseFloat(prev.chequeAdv || '0');
+      
+      // Calculate total advance
+      const totalAdvance = cashAdv1 + ccUpiAdv + chequeAdv;
+      
+      // Calculate balance - payment estimate minus total advance
+      const balance = paymentEstimate - totalAdvance;
+      
+      console.log('Recalculating payment values:', {
+        paymentEstimate,
+        cashAdv1,
+        ccUpiAdv,
+        chequeAdv,
+        totalAdvance,
+        balance
+      });
+      
+      // Return updated form data with new advance and balance values
+      return {
+        ...prev,
+        advance: totalAdvance.toFixed(2),
+        balance: balance.toFixed(2)
+      };
+    });
   };
 
    // Helper functions for manual entry (Keep these)
@@ -929,10 +1197,17 @@ const OrderCardForm: React.FC = () => {
   // Form submission handler
   const handleOrderCardSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    console.log('Order Card Form Submitted:', formData);
     
-    // Call the function to save the order to the database
-    saveOrderToDatabase();
+    // Recalculate advance and balance before submitting to ensure they're up-to-date
+    updateBalanceAfterPaymentChange();
+    
+    // Add a small delay to ensure the state update completes before submission
+    setTimeout(() => {
+      console.log('Order Card Form Submitted:', formData);
+      
+      // Call the function to save the order to the database
+      saveOrderToDatabase();
+    }, 100);
   };
   
   // Function to save order data to the database
@@ -941,24 +1216,75 @@ const OrderCardForm: React.FC = () => {
       console.log('Saving order to database...');
       
       // First, get the prescription ID from the prescription number
-      const { data: prescriptions, error: prescError } = await supabase
-        .from('prescriptions')
-        .select('id')
-        .eq('prescription_no', formData.prescriptionNo)
-        .single();
+      let prescriptionId: string;
+      try {
+        // Add proper headers to avoid 406 errors
+        const { data: prescriptions, error: prescError } = await supabase
+          .from('prescriptions')
+          .select('id')
+          .eq('prescription_no', formData.prescriptionNo)
+          .single();
       
-      if (prescError || !prescriptions) {
-        console.error('Error finding prescription:', prescError instanceof Error ? prescError.message : 'Unknown error');
+        if (prescError || !prescriptions) {
+          console.error('Error finding prescription:', prescError ? prescError.message : 'Unknown error');
+          
+          // If prescription not found, let's create it instead
+          if (prescError && prescError.code === 'PGRST116') {
+            console.log('Prescription not found, will create a new one');
+            // Create a new prescription record
+            try {
+              // Create new prescription with only the required fields from the schema
+              const { data: newPrescription, error: createError } = await supabase
+                .from('prescriptions')
+                .insert({
+                  prescription_no: formData.prescriptionNo,
+                  name: formData.name || 'Unnamed', // Required field
+                  prescribed_by: formData.prescribedBy || 'Unknown', // Required field
+                  date: formData.date || new Date().toISOString().split('T')[0] // Required field
+                  // No status field in the schema
+                })
+                .select('id')
+                .single();
+                
+              if (createError || !newPrescription) {
+                throw new Error(`Failed to create prescription: ${createError?.message || 'Unknown error'}`);
+              }
+              
+              prescriptionId = newPrescription.id;
+              console.log('Created new prescription:', newPrescription);
+            } catch (createPrescErr) {
+              console.error('Error creating prescription:', createPrescErr);
+              setNotification({
+                message: `Failed to create a new prescription: ${createPrescErr instanceof Error ? createPrescErr.message : 'Unknown error'}`,
+                type: 'error',
+                visible: true
+              });
+              return;
+            }
+          } else {
+            setNotification({
+              message: `Error: Could not find prescription with number ${formData.prescriptionNo}. ${prescError ? prescError.message : ''}`,
+              type: 'error',
+              visible: true
+            });
+            return;
+          }
+        } else {
+          // Prescription found, set the ID
+          prescriptionId = prescriptions.id;
+          console.log('Found prescription:', prescriptions);
+        }
+      } catch (lookupError) {
+        console.error('Exception during prescription lookup:', lookupError);
         setNotification({
-          message: `Error: Could not find prescription with number ${formData.prescriptionNo}`,
+          message: `Error looking up prescription: ${lookupError instanceof Error ? lookupError.message : 'Unknown error'}`,
           type: 'error',
           visible: true
         });
         return;
       }
       
-      console.log('Found prescription:', prescriptions);
-      const prescriptionId = prescriptions.id;
+      // prescriptionId is now set either from found prescription or newly created one
       
       // Use the existing order number or generate a new one
       const orderNumber = formData.referenceNo || `ORD-${Date.now()}`;
@@ -970,7 +1296,7 @@ const OrderCardForm: React.FC = () => {
         .eq('order_no', orderNumber)
         .single();
       
-      console.log('Existing order check:', existingOrder);
+      console.log('Existing order check:', existingOrder, orderCheckError ? `Error: ${orderCheckError.message}` : '');
       
       // Prepare order data
       const orderData = {
@@ -983,33 +1309,81 @@ const OrderCardForm: React.FC = () => {
         remarks: 'General notes for the order',
         
         // Map the items
-        items: formData.selectedItems.map((item, index) => ({
-          si: index + 1,
-          itemType: 'unknown', // Default to unknown since itemType is not in SelectedItem
-          itemCode: item.itemCode || '',
-          itemName: item.itemName || '',
-          rate: typeof item.rate === 'string' ? parseFloat(item.rate) : Number(item.rate),
-          qty: item.qty,
-          amount: typeof item.amount === 'string' ? parseFloat(item.amount) : Number(item.amount),
-          taxPercent: item.taxPercent || 0,
-          discountPercent: item.discountPercent || 0,
-          discountAmount: item.discountAmount ? 
-            (typeof item.discountAmount === 'string' ? parseFloat(item.discountAmount) : Number(item.discountAmount)) : 0,
-          brandName: item.brandName || '',
-          index: item.index || '',
-          coating: item.coating || ''
-        })),
+        items: formData.selectedItems.map((item, index) => {
+          // Determine the item type based on itemCode or itemName
+          let itemType = 'Other';
+          
+          // Check if item code has prefixes that indicate type
+          if (item.itemCode) {
+            if (item.itemCode.startsWith('FRM')) {
+              itemType = 'Frames';
+            } else if (item.itemCode.startsWith('SUN')) {
+              itemType = 'Sun Glasses';
+            } else if (item.itemCode.startsWith('LEN')) {
+              itemType = 'Lens';
+            }
+          }
+          
+          // Or check if item name contains type indicators
+          if (itemType === 'Other' && item.itemName) {
+            const nameLower = item.itemName.toLowerCase();
+            if (nameLower.includes('frame')) {
+              itemType = 'Frames';
+            } else if (nameLower.includes('sun') || nameLower.includes('glass')) {
+              itemType = 'Sun Glasses';
+            } else if (nameLower.includes('lens')) {
+              itemType = 'Lens';
+            }
+          }
+          
+          return {
+            si: index + 1,
+            itemType,
+            itemCode: item.itemCode || '',
+            itemName: item.itemName || '',
+            rate: typeof item.rate === 'string' ? parseFloat(item.rate) : Number(item.rate),
+            qty: item.qty,
+            amount: typeof item.amount === 'string' ? parseFloat(item.amount) : Number(item.amount),
+            taxPercent: item.taxPercent || 0,
+            discountPercent: item.discountPercent || 0,
+            discountAmount: item.discountAmount ? 
+              (typeof item.discountAmount === 'string' ? parseFloat(item.discountAmount) : Number(item.discountAmount)) : 0,
+            brandName: item.brandName || '',
+            index: item.index || '',
+            coating: item.coating || ''
+          };
+        }),
         
-        // Map payment details
+        // Map payment details - ensure empty strings are treated as 0
         payment: {
-          paymentEstimate: parseFloat(formData.paymentEstimate || '0'),
-          taxAmount: 0, // Calculated tax
-          discountAmount: 0, // Total discount
-          finalAmount: parseFloat(formData.paymentEstimate || '0'), // Final amount after tax and discount
-          advanceCash: parseFloat(formData.cashAdv1 || '0'),
-          advanceCardUpi: parseFloat(formData.ccUpiAdv || '0'),
-          advanceOther: parseFloat(formData.chequeAdv || '0'),
-          scheduleAmount: parseFloat(formData.schAmt || '0')
+          paymentEstimate: formData.paymentEstimate === '' ? 0 : parseFloat(formData.paymentEstimate || '0'),
+          taxAmount: formData.taxAmount === '' ? 0 : parseFloat(formData.taxAmount || '0'), // Use the new taxAmount field
+          discountAmount: formData.schAmt === '' ? 0 : parseFloat(formData.schAmt || '0'), // Total discount
+          // CRITICAL FIX: finalAmount must equal paymentEstimate
+          // The database uses finalAmount to calculate the balance
+          // This must be correctly set for the balance to update
+          finalAmount: (formData.paymentEstimate === '' ? 0 : parseFloat(formData.paymentEstimate || '0')),
+          advanceCash: formData.cashAdv1 === '' ? 0 : parseFloat(formData.cashAdv1 || '0'),
+          advanceCardUpi: formData.ccUpiAdv === '' ? 0 : parseFloat(formData.ccUpiAdv || '0'),
+          advanceOther: formData.advanceOther === '' ? 0 : parseFloat(formData.advanceOther || '0'), // Use advanceOther instead of chequeAdv
+          scheduleAmount: formData.schAmt === '' ? 0 : parseFloat(formData.schAmt || '0'),
+          
+          // EXPLICITLY calculate and include total_advance and balance
+          // This ensures the database gets the correct values when you update an order
+          total_advance: (
+            (formData.cashAdv1 === '' ? 0 : parseFloat(formData.cashAdv1 || '0')) +
+            (formData.ccUpiAdv === '' ? 0 : parseFloat(formData.ccUpiAdv || '0')) +
+            (formData.advanceOther === '' ? 0 : parseFloat(formData.advanceOther || '0'))
+          ),
+          // Calculate balance as paymentEstimate minus total advance
+          balance: (
+            (formData.paymentEstimate === '' ? 0 : parseFloat(formData.paymentEstimate || '0')) -
+            (
+              (formData.cashAdv1 === '' ? 0 : parseFloat(formData.cashAdv1 || '0')) +
+              (formData.ccUpiAdv === '' ? 0 : parseFloat(formData.ccUpiAdv || '0')) +
+              (formData.advanceOther === '' ? 0 : parseFloat(formData.advanceOther || '0'))
+            )
+          )
         }
       };
       
@@ -1050,22 +1424,25 @@ const OrderCardForm: React.FC = () => {
           }
           
           // 3. Insert new order items
-          const orderItems = orderData.items.map((item, index) => ({
-            order_id: existingOrder.id,
-            si: item.si,
-            item_type: item.itemType,
-            item_code: item.itemCode,
-            item_name: item.itemName,
-            rate: item.rate,
-            qty: item.qty,
-            amount: item.amount,
-            tax_percent: item.taxPercent,
-            discount_percent: item.discountPercent,
-            discount_amount: item.discountAmount,
-            brand_name: item.brandName,
-            index: item.index,
-            coating: item.coating
-          }));
+          const orderItems = orderData.items.map(item => {
+            // The itemType field has already been determined in the orderData preparation stage
+            return {
+              order_id: existingOrder.id,
+              si: item.si,
+              item_type: item.itemType, // Already contains 'Frames', 'Sun Glasses', 'Lens', or 'Other'
+              item_code: item.itemCode,
+              item_name: item.itemName,
+              rate: item.rate,
+              qty: item.qty,
+              amount: item.amount,
+              tax_percent: item.taxPercent,
+              discount_percent: item.discountPercent,
+              discount_amount: item.discountAmount,
+              brand_name: item.brandName,
+              index: item.index,
+              coating: item.coating
+            };
+          });
           
           const { error: itemsInsertError } = await supabase
             .from('order_items')
@@ -1076,39 +1453,128 @@ const OrderCardForm: React.FC = () => {
             throw new Error(`Failed to insert order items: ${itemsInsertError.message}`);
           }
           
-          // 4. Update payment record
-          const { error: paymentUpdateError } = await supabase
+          // Get current payment values from database
+          const { data: currentPayment, error: fetchPaymentError } = await supabase
             .from('order_payments')
-            .update({
-              payment_estimate: orderData.payment.paymentEstimate,
-              tax_amount: orderData.payment.taxAmount,
-              discount_amount: orderData.payment.discountAmount,
-              final_amount: orderData.payment.finalAmount,
-              advance_cash: orderData.payment.advanceCash,
-              advance_card_upi: orderData.payment.advanceCardUpi,
-              advance_other: orderData.payment.advanceOther,
-              schedule_amount: orderData.payment.scheduleAmount
-            })
-            .eq('order_id', existingOrder.id);
-            
-          if (paymentUpdateError) {
-            console.error('Error updating payment:', paymentUpdateError);
-            throw new Error(`Failed to update payment: ${paymentUpdateError.message}`);
+            .select('*')
+            .eq('order_id', existingOrder.id)
+            .single();
+
+          if (fetchPaymentError) {
+            console.error('Error fetching current payment:', fetchPaymentError);
+            throw new Error(`Failed to fetch current payment: ${fetchPaymentError.message}`);
           }
+
+          // Convert form values to numbers
+          const newAdvanceCash = parseFloat(formData.cashAdv1 || '0');
+          const newAdvanceCardUpi = parseFloat(formData.ccUpiAdv || '0');
+          const newAdvanceOther = parseFloat(formData.advanceOther || '0');
+          const finalAmount = parseFloat(formData.paymentEstimate || '0');
           
-          console.log('Successfully updated order and related records');
-          result = { 
-            success: true, 
-            message: 'Order updated successfully', 
-            orderId: existingOrder.id 
-          };
-        } catch (updateError) {
-          console.error('Error during order update process:', updateError);
-          result = { 
-            success: false, 
-            message: updateError instanceof Error ? updateError.message : 'Unknown error during update' 
-          };
-        }
+          // Calculate new values by adding to existing values
+          const currentAdvanceCash = parseFloat(currentPayment.advance_cash) || 0;
+          const currentAdvanceCardUpi = parseFloat(currentPayment.advance_card_upi) || 0;
+          const currentAdvanceOther = parseFloat(currentPayment.advance_other) || 0;
+          
+          const advanceCash = currentAdvanceCash + newAdvanceCash;
+          const advanceCardUpi = currentAdvanceCardUpi + newAdvanceCardUpi;
+          const advanceOther = currentAdvanceOther + newAdvanceOther;
+          
+          // Log the exact values being sent to the database
+          console.log('UPDATING PAYMENT VALUES:', {
+            current: {
+              advance_cash: currentAdvanceCash,
+              advance_card_upi: currentAdvanceCardUpi,
+              advance_other: currentAdvanceOther
+            },
+            new: {
+              advance_cash: newAdvanceCash,
+              advance_card_upi: newAdvanceCardUpi,
+              advance_other: newAdvanceOther
+            },
+            updated: {
+              advance_cash: advanceCash,
+              advance_card_upi: advanceCardUpi,
+              advance_other: advanceOther
+            }
+          });
+          
+          try {
+            // Update payment record - only update base fields, let database handle generated columns
+            const { error: paymentUpdateError } = await supabase
+              .from('order_payments')
+              .update({
+                payment_estimate: finalAmount,
+                tax_amount: parseFloat(formData.taxAmount || '0'),
+                discount_amount: parseFloat(formData.schAmt || '0'),
+                final_amount: finalAmount,
+                advance_cash: advanceCash,
+                advance_card_upi: advanceCardUpi,
+                advance_other: advanceOther,
+                schedule_amount: parseFloat(formData.schAmt || '0'),
+                updated_at: new Date().toISOString()
+              })
+              .eq('order_id', existingOrder.id)
+              .select('*');
+              
+            if (paymentUpdateError) {
+              console.error('Error updating payment:', paymentUpdateError);
+              throw new Error(`Failed to update payment: ${paymentUpdateError.message}`);
+            }
+            
+            console.log('Payment update successful. Verifying database values...');
+            
+            // Verify the update was successful
+            const { data: currentPayment, error: fetchError } = await supabase
+              .from('order_payments')
+              .select('*')
+              .eq('order_id', existingOrder.id)
+              .single();
+              
+            if (fetchError) throw fetchError;
+            
+            console.log('CURRENT DATABASE VALUES:', currentPayment);
+            
+            // If the values don't match what we just tried to save, try a direct SQL update
+            if (currentPayment.advance_cash !== advanceCash || 
+                currentPayment.advance_card_upi !== advanceCardUpi || 
+                currentPayment.advance_other !== advanceOther) {
+                  
+              console.log('Mismatch detected. Attempting direct SQL update...');
+              
+              try {
+                // Use a direct SQL query to force update the values
+                const { data: updateResult, error: sqlError } = await supabase.rpc('update_order_payment_values', {
+                  p_order_id: existingOrder.id,
+                  p_advance_cash: advanceCash,
+                  p_advance_card_upi: advanceCardUpi,
+                  p_advance_other: advanceOther,
+                  p_final_amount: finalAmount
+                });
+                
+                if (sqlError) {
+                  console.error('SQL update error:', sqlError);
+                } else {
+                  console.log('Direct SQL update successful:', updateResult);
+                }
+              } catch (rpcError) {
+                console.error('RPC call failed:', rpcError);
+              }
+            }
+            
+            result = { 
+              success: true, 
+              message: 'Order updated successfully', 
+              orderId: existingOrder.id 
+            };
+            
+          } catch (error) {
+            console.error('Error during order update process:', error);
+            result = { 
+              success: false, 
+              message: error instanceof Error ? error.message : 'Unknown error during update' 
+            };
+          }
       } else {
         // If no existing order, create a new one
         console.log('Creating new order');
@@ -1123,7 +1589,7 @@ const OrderCardForm: React.FC = () => {
         });
       } else {
         setNotification({
-          message: `Error: ${result ? result.message : 'Unknown error'}`,
+          message: `Error: ${result && result.message ? result.message : 'Unknown error'}`,
           type: 'error',
           visible: true
         });
@@ -1898,7 +2364,6 @@ const OrderCardForm: React.FC = () => {
             {/* Payment Section */} 
             <PaymentSection
                 formData={formData}
-                handleChange={handleChange}
                 handleNumericInputChange={handleNumericInputChange}
             />
         </div>
