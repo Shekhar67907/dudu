@@ -403,6 +403,8 @@ const OrderCardForm: React.FC = () => {
         console.log('Search results:', data);
         console.log('Raw data with eye_prescriptions:', data);
       
+      console.log('Raw data from API before transformation:', data);
+      
       // Transformation of database results to match your interface including eye prescriptions
       const transformedData: SearchSuggestion[] = data.map((item: any) => {
         // When we select this suggestion, we want to preserve the original prescription number and reference number
@@ -468,17 +470,27 @@ const OrderCardForm: React.FC = () => {
         });
         
         // Add these payment values to the suggestion object so they can be used when populating the form
+        // IMPORTANT: Use the ACTUAL database values directly without any modification
         item = {
           ...item,
-          paymentEstimate: paymentEstimate.toString(),
-          taxAmount: taxAmount.toString(),
-          schAmt: scheduleAmount.toString(),
-          cashAdv1: advanceCash.toString(),
-          ccUpiAdv: advanceCardUpi.toString(),
-          advanceOther: advanceOther.toString(), // Map to the new field
-          chequeAdv: '0', // Set to 0 for backward compatibility
-          advance: totalAdvance.toString(),
-          balance: balance.toString()
+          // Add an explicit flag to mark this as data from database
+          isFromDatabase: true,
+          
+          // Payment calculation fields - preserve EXACT database values without any transformation
+          paymentEstimate: orderPayment?.payment_estimate?.toString() || '0',
+          taxAmount: orderPayment?.tax_amount?.toString() || '0',
+          schAmt: orderPayment?.schedule_amount?.toString() || '0',
+          
+          // Individual advance payment fields - preserve EXACT database values
+          cashAdv1: orderPayment?.advance_cash?.toString() || '0',
+          ccUpiAdv: orderPayment?.advance_card_upi?.toString() || '0',
+          advanceOther: orderPayment?.advance_other?.toString() || '0',
+          chequeAdv: orderPayment?.advance_other?.toString() || '0', // Fix: use advance_other, not tax_amount
+          
+          // Database generated calculated fields - preserve EXACT database values
+          // This is critical for ensuring we display what's actually in the database
+          advance: orderPayment?.total_advance?.toString() || '0',
+          balance: orderPayment?.balance?.toString() || '0'
         };
         
         // Log the full structure of the payment data for debugging
@@ -764,6 +776,21 @@ const OrderCardForm: React.FC = () => {
   
   // Handle suggestion selection
   const handleSuggestionSelect = (suggestion: SearchSuggestion) => {
+    console.log('Selected suggestion:', suggestion);
+    console.log('IMPORTANT - Raw payment values from database:', {
+      advance: suggestion.advance,
+      balance: suggestion.balance,
+      advancePayments: {
+        cashAdv1: suggestion.cashAdv1,
+        ccUpiAdv: suggestion.ccUpiAdv,
+        advanceOther: suggestion.advanceOther
+      },
+      other: {
+        paymentEstimate: suggestion.paymentEstimate,
+        taxAmount: suggestion.taxAmount,
+        schAmt: suggestion.schAmt
+      }
+    });
     let prescriptionNumber = suggestion.prescriptionNo;
     let referenceNumber = suggestion.referenceNo;
     
@@ -829,6 +856,8 @@ const OrderCardForm: React.FC = () => {
         mobileNo: suggestion.mobileNo || '',
         email: suggestion.email || '',
         address: suggestion.address || '',
+        // CustomerCode is critical for detecting existing database records
+        customerCode: suggestion.customerCode || '',
         // Format dates for datetime-local input if necessary
         birthDay: formatDateForInput(suggestion.birthDay), // Assuming birthDay is a date string
         marriageAnniversary: formatDateForInput(suggestion.marriageAnniversary), // Assuming marriageAnniversary is a date string
@@ -842,22 +871,24 @@ const OrderCardForm: React.FC = () => {
         // Populate the order items (frames/sun glasses)
         selectedItems: orderItems,
         
-        // Populate payment details from the extracted values from database
-        paymentEstimate: parseFloat(suggestion.paymentEstimate || '0').toFixed(2) || '0.00',
-        schAmt: parseFloat(suggestion.schAmt || '0').toFixed(2) || '0.00',
-        // Set individual advance payments
-        cashAdv1: parseFloat(suggestion.cashAdv1 || '0').toFixed(2) || '0.00',
-        ccUpiAdv: parseFloat(suggestion.ccUpiAdv || '0').toFixed(2) || '0.00',
-        chequeAdv: parseFloat(suggestion.chequeAdv || '0').toFixed(2) || '0.00',
-        // Set the total advance
-        advance: (parseFloat(suggestion.cashAdv1 || '0') + 
-                 parseFloat(suggestion.ccUpiAdv || '0') + 
-                 parseFloat(suggestion.chequeAdv || '0')).toFixed(2),
-        // Calculate and set the balance
-        balance: (parseFloat(suggestion.paymentEstimate || '0') - 
-                (parseFloat(suggestion.cashAdv1 || '0') + 
-                 parseFloat(suggestion.ccUpiAdv || '0') + 
-                 parseFloat(suggestion.chequeAdv || '0'))).toFixed(2),
+        // CRITICAL: Do NOT format or transform any payment values from database
+        // Use the raw string values directly to maintain data integrity
+        
+        // Payment calculation fields - use raw values from database
+        paymentEstimate: suggestion.paymentEstimate || '0',
+        taxAmount: suggestion.taxAmount || '0',
+        schAmt: suggestion.schAmt || '0',
+        
+        // Individual advance payments - use raw values from database
+        cashAdv1: suggestion.cashAdv1 || '0',
+        ccUpiAdv: suggestion.ccUpiAdv || '0',
+        advanceOther: suggestion.advanceOther || '0',
+        chequeAdv: suggestion.advanceOther || '0', // Fix: use advanceOther here, not taxAmount
+        
+        // Database generated columns - use raw values without any transformation
+        // This ensures we display exactly what's in the database
+        advance: suggestion.advance || '0',  // Database total_advance value
+        balance: suggestion.balance || '0',  // Database balance value
         
         // Note: currentDateTime and deliveryDateTime are not part of the search result typically,
         // so we keep the existing values or generate new ones as per initial state logic.
@@ -1075,47 +1106,76 @@ const OrderCardForm: React.FC = () => {
     handleChange(syntheticEvent);
     
     // After handling the change, check if this is a payment field and recalculate balance if needed
-    if (['paymentEstimate', 'cashAdv1', 'ccUpiAdv', 'chequeAdv'].includes(name)) {
+    if (['paymentEstimate', 'cashAdv1', 'ccUpiAdv', 'advanceOther'].includes(name)) {
       updateBalanceAfterPaymentChange();
     }
   };
   
   // Function to recalculate advance and balance whenever payment fields change
   const updateBalanceAfterPaymentChange = () => {
+    // CRITICAL: This function should only be used for NEW users
+    // For existing database records, we should never modify balance/advance directly
     setFormData(prev => {
+      // First check for the explicit isFromDatabase flag added during data loading
+      // This is the most reliable way to detect records from database
+      const isExistingRecord = 
+        // First priority: explicit flag set during data loading
+        prev.isFromDatabase === true || 
+        // Second priority: has prescription number and reference number
+        ((prev.prescriptionNo && prev.prescriptionNo !== '') && 
+         (prev.referenceNo && prev.referenceNo !== '')) || 
+        // Third priority: has database-populated payment values
+        (prev.advance && prev.advance !== '0' && prev.advance !== '0.00');
+      
       // Get current payment values - ensure empty strings are treated as 0
       const paymentEstimate = prev.paymentEstimate === '' ? 0 : parseFloat(prev.paymentEstimate || '0');
       const cashAdv1 = prev.cashAdv1 === '' ? 0 : parseFloat(prev.cashAdv1 || '0');
       const ccUpiAdv = prev.ccUpiAdv === '' ? 0 : parseFloat(prev.ccUpiAdv || '0');
-      const chequeAdv = prev.chequeAdv === '' ? 0 : parseFloat(prev.chequeAdv || '0');
+      const advanceOther = prev.advanceOther === '' ? 0 : parseFloat(prev.advanceOther || '0');
       
-      // Calculate total advance
-      const totalAdvance = cashAdv1 + ccUpiAdv + chequeAdv;
+      // Calculate total advance correctly using the three advance payment types
+      // Per the database design: total_advance = advance_cash + advance_card_upi + advance_other
+      const totalAdvance = cashAdv1 + ccUpiAdv + advanceOther;
       
       // Calculate balance - payment estimate minus total advance
-      const balance = paymentEstimate - totalAdvance;
+      const balance = Math.max(0, paymentEstimate - totalAdvance);
       
-      console.log('Recalculating payment values:', {
-        paymentEstimate,
-        cashAdv1,
-        ccUpiAdv,
-        chequeAdv,
-        totalAdvance,
-        balance
+      console.log('Payment calculation:', {
+        isExistingRecord,
+        inputs: {
+          paymentEstimate,
+          cashAdv1, 
+          ccUpiAdv,
+          advanceOther,
+          existingAdvance: prev.advance,
+          existingBalance: prev.balance
+        },
+        calculated: {
+          totalAdvance,
+          balance
+        }
       });
       
-      // Return updated form data with new advance and balance values
-      return {
-        ...prev,
-        advance: totalAdvance.toFixed(2),
-        balance: balance.toFixed(2)
-      };
+      // CRITICAL: For existing records from database, preserve their values
+      // Only update payment fields for new records
+      if (isExistingRecord) {
+        // For existing records, only update the input fields and leave the database-calculated
+        // fields (advance, balance) alone
+        return prev;
+      } else {
+        // For new records, update the calculated fields
+        return {
+          ...prev,
+          advance: totalAdvance.toFixed(2),
+          balance: balance.toFixed(2)
+        };
+      }
     });
   };
 
    // Helper functions for manual entry (Keep these)
   const handleManualEntryChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    const { name, value, type } = e.target;
+    const { name, value } = e.target; // Removed unused 'type' variable
 
     const processedValue = (name === 'manualEntryQty') ? parseInt(value) || 0 : (name === 'manualEntryRate' || name === 'manualEntryItemAmount') ? parseFloat(value) || 0 : value;
 
@@ -1215,69 +1275,166 @@ const OrderCardForm: React.FC = () => {
     try {
       console.log('Saving order to database...');
       
-      // First, get the prescription ID from the prescription number
-      let prescriptionId: string;
-      try {
-        // Add proper headers to avoid 406 errors
-        const { data: prescriptions, error: prescError } = await supabase
-          .from('prescriptions')
-          .select('id')
-          .eq('prescription_no', formData.prescriptionNo)
-          .single();
+      // First, try to find an existing prescription by using multiple identifiers
+      // This ensures we update existing records instead of creating duplicates
+      let prescriptionId = ''; // Initialize with empty string to avoid TypeScript errors
+      let isExistingRecord = false;
       
-        if (prescError || !prescriptions) {
-          console.error('Error finding prescription:', prescError ? prescError.message : 'Unknown error');
-          
-          // If prescription not found, let's create it instead
-          if (prescError && prescError.code === 'PGRST116') {
-            console.log('Prescription not found, will create a new one');
-            // Create a new prescription record
-            try {
-              // Create new prescription with only the required fields from the schema
-              const { data: newPrescription, error: createError } = await supabase
-                .from('prescriptions')
-                .insert({
-                  prescription_no: formData.prescriptionNo,
-                  name: formData.name || 'Unnamed', // Required field
-                  prescribed_by: formData.prescribedBy || 'Unknown', // Required field
-                  date: formData.date || new Date().toISOString().split('T')[0] // Required field
-                  // No status field in the schema
-                })
-                .select('id')
-                .single();
-                
-              if (createError || !newPrescription) {
-                throw new Error(`Failed to create prescription: ${createError?.message || 'Unknown error'}`);
-              }
-              
-              prescriptionId = newPrescription.id;
-              console.log('Created new prescription:', newPrescription);
-            } catch (createPrescErr) {
-              console.error('Error creating prescription:', createPrescErr);
-              setNotification({
-                message: `Failed to create a new prescription: ${createPrescErr instanceof Error ? createPrescErr.message : 'Unknown error'}`,
-                type: 'error',
-                visible: true
-              });
-              return;
-            }
-          } else {
-            setNotification({
-              message: `Error: Could not find prescription with number ${formData.prescriptionNo}. ${prescError ? prescError.message : ''}`,
-              type: 'error',
-              visible: true
-            });
-            return;
+      try {
+        console.log('Checking for existing prescription with multiple identifiers');
+        
+        // Try to find by customer code first if available
+        if (formData.customerCode && formData.customerCode !== '') {
+          const { data: prescByCustomerCode, error: customerCodeError } = await supabase
+            .from('prescriptions')
+            .select('id')
+            .eq('customer_code', formData.customerCode)
+            .single();
+            
+          if (!customerCodeError && prescByCustomerCode) {
+            prescriptionId = prescByCustomerCode.id;
+            isExistingRecord = true;
+            console.log('Found existing prescription by customer code:', prescByCustomerCode.id);
           }
+        }
+        
+        // Try by prescription number if not found by customer code
+        if (!isExistingRecord && formData.prescriptionNo && formData.prescriptionNo !== '') {
+          const { data: prescByNumber, error: prescNumError } = await supabase
+            .from('prescriptions')
+            .select('id')
+            .eq('prescription_no', formData.prescriptionNo)
+            .single();
+          
+          if (!prescNumError && prescByNumber) {
+            // Found by prescription number
+            prescriptionId = prescByNumber.id;
+            isExistingRecord = true;
+            console.log('Found existing prescription by prescription number:', prescByNumber.id);
+          }
+        }
+        
+        // Try by reference number if still not found
+        if (!isExistingRecord && formData.referenceNo && formData.referenceNo !== '') {
+          const { data: prescByRef, error: prescRefError } = await supabase
+            .from('prescriptions')
+            .select('id')
+            .eq('reference_no', formData.referenceNo)
+            .single();
+            
+          if (!prescRefError && prescByRef) {
+            // Found by reference number
+            prescriptionId = prescByRef.id;
+            isExistingRecord = true;
+            console.log('Found existing prescription by reference number:', prescByRef.id);
+          }
+        }
+        
+        // If still not found and mobile number exists, try by mobile
+        if (!isExistingRecord && formData.mobileNo && formData.mobileNo !== '') {
+          const { data: prescByMobile, error: prescMobileError } = await supabase
+            .from('prescriptions')
+            .select('id')
+            .eq('mobile_no', formData.mobileNo)
+            .single();
+            
+          if (!prescMobileError && prescByMobile) {
+            // Found by mobile number
+            prescriptionId = prescByMobile.id;
+            isExistingRecord = true;
+            console.log('Found existing prescription by mobile number:', prescByMobile.id);
+          }
+        }
+        
+        // If no existing record was found, create a new one
+        if (!isExistingRecord) {
+          console.log('No existing prescription found, creating new one');
+          
+          // Create a new prescription with all available fields
+          const { data: newPrescription, error: createError } = await supabase
+            .from('prescriptions')
+            .insert({
+              prescription_no: formData.prescriptionNo,
+              reference_no: formData.referenceNo,
+              name: formData.name || 'Unnamed', // Required field
+              prescribed_by: formData.prescribedBy || 'Unknown', // Required field
+              date: formData.date || new Date().toISOString().split('T')[0], // Required field
+              mobile_no: formData.mobileNo,
+              email: formData.email,
+              address: formData.address,
+              city: formData.city,
+              state: formData.state,
+              pin_code: formData.pinCode,
+              age: formData.age,
+              gender: formData.gender,
+              customer_code: formData.customerCode
+            })
+            .select('id')
+            .single();
+            
+          if (createError || !newPrescription) {
+            throw new Error(`Failed to create prescription: ${createError?.message || 'Unknown error'}`);
+          }
+          
+          prescriptionId = newPrescription.id;
+          console.log('Created new prescription:', newPrescription);
         } else {
-          // Prescription found, set the ID
-          prescriptionId = prescriptions.id;
-          console.log('Found prescription:', prescriptions);
+          // If we found an existing record, make sure we update all relevant fields
+          console.log('Updating existing prescription:', prescriptionId);
+          
+          // Update the prescription with current form data to ensure all fields are current
+          const updateData: Record<string, any> = {};
+          
+          // CRITICAL: Always include ALL required fields to avoid not-null constraint violations
+          
+          // name is a required field (NOT NULL)
+          updateData.name = formData.name || 'Unnamed';
+          
+          // prescribed_by is a required field (NOT NULL)
+          updateData.prescribed_by = formData.prescribedBy || 'Unknown';
+          
+          // date is a required field (NOT NULL)
+          updateData.date = formData.date || new Date().toISOString().split('T')[0];
+          
+          // prescription_no is a required field (NOT NULL) and must be unique
+          updateData.prescription_no = formData.prescriptionNo || '';
+          
+          // Optional fields - only update if they have values
+          if (formData.mobileNo) updateData.mobile_no = formData.mobileNo;
+          if (formData.email) updateData.email = formData.email;
+          if (formData.address) updateData.address = formData.address;
+          if (formData.city) updateData.city = formData.city;
+          if (formData.state) updateData.state = formData.state;
+          if (formData.pinCode) updateData.pin_code = formData.pinCode;
+          if (formData.age) updateData.age = formData.age;
+          if (formData.gender) updateData.gender = formData.gender;
+          if (formData.customerCode) updateData.customer_code = formData.customerCode;
+          
+          // Add updated_at timestamp
+          updateData.updated_at = new Date().toISOString();
+          
+          // Only perform update if we have fields to update
+          if (Object.keys(updateData).length > 1) { // > 1 because we always have updated_at
+            // Include the ID in the update data to make this an upsert operation
+            // This will use POST instead of PATCH behind the scenes, avoiding CORS issues
+            const { error: updateError } = await supabase
+              .from('prescriptions')
+              .upsert({
+                id: prescriptionId,
+                ...updateData
+              });
+              
+            if (updateError) {
+              console.error('Error updating prescription:', updateError);
+            } else {
+              console.log('Successfully updated prescription data');
+            }
+          }
         }
       } catch (lookupError) {
-        console.error('Exception during prescription lookup:', lookupError);
+        console.error('Exception during prescription handling:', lookupError);
         setNotification({
-          message: `Error looking up prescription: ${lookupError instanceof Error ? lookupError.message : 'Unknown error'}`,
+          message: `Error with prescription: ${lookupError instanceof Error ? lookupError.message : 'Unknown error'}`,
           type: 'error',
           visible: true
         });
@@ -1289,18 +1446,48 @@ const OrderCardForm: React.FC = () => {
       // Use the existing order number or generate a new one
       const orderNumber = formData.referenceNo || `ORD-${Date.now()}`;
       
-      // First check if an order with this order number already exists
-      const { data: existingOrder, error: orderCheckError } = await supabase
-        .from('orders')
-        .select('id')
-        .eq('order_no', orderNumber)
-        .single();
+      // First check if an order with this prescription already exists
+      // This is more reliable than checking by order number alone
+      let existingOrder = null;
+      let orderCheckError = null;
       
-      console.log('Existing order check:', existingOrder, orderCheckError ? `Error: ${orderCheckError.message}` : '');
+      try {
+        console.log('Looking for existing order with prescriptionId:', prescriptionId);
+        const { data: orderByPrescription, error: prescOrderError } = await supabase
+          .from('orders')
+          .select('id')
+          .eq('prescription_id', prescriptionId)
+          .maybeSingle(); // Use maybeSingle instead of single to avoid errors when no record found
+        
+        if (!prescOrderError && orderByPrescription) {
+          existingOrder = orderByPrescription;
+          console.log('Found existing order by prescriptionId:', existingOrder);
+        } else if (formData.referenceNo) {
+          // If not found by prescription ID, try by order number/reference
+          const { data: orderByNumber, error: orderNumError } = await supabase
+            .from('orders')
+            .select('id')
+            .eq('order_no', orderNumber)
+            .maybeSingle();
+            
+          if (!orderNumError && orderByNumber) {
+            existingOrder = orderByNumber;
+            console.log('Found existing order by orderNumber:', existingOrder);
+          } else {
+            orderCheckError = orderNumError;
+          }
+        }
+      } catch (lookupErr) {
+        console.error('Error looking up existing order:', lookupErr);
+        orderCheckError = { message: lookupErr instanceof Error ? lookupErr.message : 'Unknown error' };
+      }
+        
+      console.log('Existing order check results:', existingOrder, orderCheckError ? `Error: ${orderCheckError.message}` : '');
       
       // Prepare order data
       const orderData = {
-        prescriptionId,
+        // Fix the prescriptionId to pass the ID value, not an object
+        prescriptionId: prescriptionId,
         orderNo: orderNumber,
         billNo: formData.billNo || '',
         orderDate: formData.date,
@@ -1366,24 +1553,11 @@ const OrderCardForm: React.FC = () => {
           advanceCash: formData.cashAdv1 === '' ? 0 : parseFloat(formData.cashAdv1 || '0'),
           advanceCardUpi: formData.ccUpiAdv === '' ? 0 : parseFloat(formData.ccUpiAdv || '0'),
           advanceOther: formData.advanceOther === '' ? 0 : parseFloat(formData.advanceOther || '0'), // Use advanceOther instead of chequeAdv
-          scheduleAmount: formData.schAmt === '' ? 0 : parseFloat(formData.schAmt || '0'),
+          scheduleAmount: formData.schAmt === '' ? 0 : parseFloat(formData.schAmt || '0')
           
-          // EXPLICITLY calculate and include total_advance and balance
-          // This ensures the database gets the correct values when you update an order
-          total_advance: (
-            (formData.cashAdv1 === '' ? 0 : parseFloat(formData.cashAdv1 || '0')) +
-            (formData.ccUpiAdv === '' ? 0 : parseFloat(formData.ccUpiAdv || '0')) +
-            (formData.advanceOther === '' ? 0 : parseFloat(formData.advanceOther || '0'))
-          ),
-          // Calculate balance as paymentEstimate minus total advance
-          balance: (
-            (formData.paymentEstimate === '' ? 0 : parseFloat(formData.paymentEstimate || '0')) -
-            (
-              (formData.cashAdv1 === '' ? 0 : parseFloat(formData.cashAdv1 || '0')) +
-              (formData.ccUpiAdv === '' ? 0 : parseFloat(formData.ccUpiAdv || '0')) +
-              (formData.advanceOther === '' ? 0 : parseFloat(formData.advanceOther || '0'))
-            )
-          )
+          // IMPORTANT: Do NOT include total_advance and balance here
+          // These are GENERATED columns in the database and will be automatically calculated
+          // Including them here was causing double calculation and incorrect values
         }
       };
       
@@ -1395,15 +1569,20 @@ const OrderCardForm: React.FC = () => {
         console.log('Updating existing order:', existingOrder.id);
         
         try {
-          // 1. Update the main order record
+          // 1. Update the main order record using upsert to avoid CORS PATCH issues
+          // This uses POST instead of PATCH behind the scenes
           const { error: orderUpdateError } = await supabase
             .from('orders')
-            .update({
+            .upsert({
+              id: existingOrder.id, // Including ID makes this an update operation
+              prescription_id: orderData.prescriptionId, // Must include this to satisfy not-null constraint
+              order_no: orderData.orderNo, // Add order_no to satisfy not-null constraint
               bill_no: orderData.billNo,
               order_date: orderData.orderDate,
               delivery_date: orderData.deliveryDate,
               status: orderData.status,
-              remarks: orderData.remarks
+              remarks: orderData.remarks,
+              updated_at: new Date().toISOString()
             })
             .eq('id', existingOrder.id);
             
@@ -1453,11 +1632,26 @@ const OrderCardForm: React.FC = () => {
             throw new Error(`Failed to insert order items: ${itemsInsertError.message}`);
           }
           
+          // 4. Check if payment record exists for this order
+          const { data: existingPayment, error: paymentCheckError } = await supabase
+            .from('order_payments')
+            .select('*')
+            .eq('order_id', existingOrder.id)
+            .maybeSingle();
+            
+          if (paymentCheckError) {
+            console.error('Error checking payment record:', paymentCheckError);
+            throw new Error(`Failed to check payment record: ${paymentCheckError.message}`);
+          }
+          
           // Convert advance values to numbers to ensure they're properly saved
           const advanceCash = parseFloat(formData.cashAdv1 || '0');
           const advanceCardUpi = parseFloat(formData.ccUpiAdv || '0');
           const advanceOther = parseFloat(formData.advanceOther || '0');
           const finalAmount = parseFloat(formData.paymentEstimate || '0');
+          const taxAmount = parseFloat(formData.taxAmount || '0');
+          const discountAmount = parseFloat(formData.schAmt || '0');
+          const scheduleAmount = parseFloat(formData.schAmt || '0');
           
           // Log the exact values being sent to the database
           console.log('PAYMENT VALUES BEING SAVED TO DATABASE:', {
@@ -1465,41 +1659,60 @@ const OrderCardForm: React.FC = () => {
             advanceCardUpi,
             advanceOther,
             finalAmount,
+            taxAmount,
+            discountAmount,
+            scheduleAmount,
             rawFormData: {
               cashAdv1: formData.cashAdv1,
               ccUpiAdv: formData.ccUpiAdv,
               advanceOther: formData.advanceOther,
-              paymentEstimate: formData.paymentEstimate
+              paymentEstimate: formData.paymentEstimate,
+              taxAmount: formData.taxAmount,
+              schAmt: formData.schAmt
             }
           });
           
-          // 4. Update payment record - only update base fields, let database handle generated columns
-          const { error: paymentUpdateError } = await supabase
-            .from('order_payments')
-            .update({
-              payment_estimate: orderData.payment.paymentEstimate,
-              tax_amount: orderData.payment.taxAmount,
-              discount_amount: orderData.payment.discountAmount,
-              final_amount: orderData.payment.finalAmount,
-              advance_cash: orderData.payment.advanceCash || 0,
-              advance_card_upi: orderData.payment.advanceCardUpi || 0,
-              advance_other: orderData.payment.advanceOther || 0,
-              schedule_amount: orderData.payment.scheduleAmount || 0,
-              updated_at: new Date().toISOString()
-            })
-            .eq('order_id', existingOrder.id)
-            .select('*');
+          // IMPORTANT: For updates, we use UPSERT pattern to handle both new and existing payment records
+          // The order_payments table has GENERATED columns (total_advance, balance) that are calculated
+          // from raw fields. We only update the raw fields and let the database calculate the generated fields.
+          const paymentData = {
+            order_id: existingOrder.id,
+            payment_estimate: finalAmount,  // This matches formData.paymentEstimate
+            tax_amount: taxAmount,
+            discount_amount: discountAmount,
+            final_amount: finalAmount,       // CRITICAL: must equal payment_estimate for database balance calculation
+            advance_cash: advanceCash,       // Raw field
+            advance_card_upi: advanceCardUpi, // Raw field
+            advance_other: advanceOther,     // Raw field
+            schedule_amount: formData.schAmt, // Fixed reference to use formData.schAmt instead of undefined scheduleAmount
+            updated_at: new Date().toISOString() 
+          };
+          
+          // Use upsert for payment records to avoid CORS PATCH issues
+          console.log(existingPayment ? 'Updating existing payment record' : 'Creating new payment record for existing order');
+          
+          // If payment exists, include its ID to make this an update operation
+          const paymentDataWithId = existingPayment 
+            ? { ...paymentData, id: existingPayment.id } 
+            : paymentData;
             
-          if (paymentUpdateError) {
-            console.error('Error updating payment:', paymentUpdateError);
-            throw new Error(`Failed to update payment: ${paymentUpdateError.message}`);
+          // Upsert uses POST instead of PATCH behind the scenes
+          const paymentUpdateResult = await supabase
+            .from('order_payments')
+            .upsert(paymentDataWithId);
+            
+          console.log('Payment upsert result:', paymentUpdateResult);
+          
+          if (paymentUpdateResult.error) {
+            console.error('Error updating/inserting payment:', paymentUpdateResult.error);
+            throw new Error(`Failed to update payment: ${paymentUpdateResult.error.message}`);
           }
           
-          console.log('Payment update successful. Verifying database values...');
+          console.log('Payment update/insert successful. Verifying database values...');
           
           // Directly verify and fix the database values if needed
           try {
-            // First, get the current values from the database
+            // First, get the current values from the database after our update
             const { data: currentPayment, error: fetchError } = await supabase
               .from('order_payments')
               .select('*')
@@ -1508,28 +1721,67 @@ const OrderCardForm: React.FC = () => {
               
             if (fetchError) throw fetchError;
             
-            console.log('CURRENT DATABASE VALUES:', currentPayment);
+            console.log('CURRENT DATABASE VALUES AFTER UPDATE:', currentPayment);
             
-            // If the values don't match what we just tried to save, try a direct SQL update
-            if (currentPayment.advance_cash !== advanceCash || 
-                currentPayment.advance_card_upi !== advanceCardUpi || 
-                currentPayment.advance_other !== advanceOther) {
-                  
+            // Verify that total_advance (generated column) equals sum of individual advances
+            const expectedTotalAdvance = advanceCash + advanceCardUpi + advanceOther;
+            const expectedBalance = Math.max(0, finalAmount - expectedTotalAdvance);
+            
+            console.log('VERIFICATION:', {
+              expectedTotalAdvance,
+              actualTotalAdvance: currentPayment.total_advance,
+              expectedBalance,
+              actualBalance: currentPayment.balance,
+              match: {
+                totalAdvance: Math.abs(expectedTotalAdvance - currentPayment.total_advance) < 0.01,
+                balance: Math.abs(expectedBalance - currentPayment.balance) < 0.01
+              }
+            });
+            
+            // Double-check with a direct SQL update only if necessary
+            if (Math.abs(expectedTotalAdvance - currentPayment.total_advance) >= 0.01 || 
+                Math.abs(expectedBalance - currentPayment.balance) >= 0.01) {
+              
               console.log('Mismatch detected. Attempting direct SQL update...');
               
-              // Use a direct SQL query to force update the values
-              const { data: updateResult, error: sqlError } = await supabase.rpc('update_order_payment_values', {
-                p_order_id: existingOrder.id,
-                p_advance_cash: advanceCash,
-                p_advance_card_upi: advanceCardUpi,
-                p_advance_other: advanceOther,
-                p_final_amount: finalAmount
-              });
+              // As a fallback, try to update via a direct upsert with only the critical fields
+              // This avoids CORS issues with RPC calls that might use PATCH
+              console.log('Attempting direct upsert with critical payment fields...');
               
-              if (sqlError) {
-                console.error('SQL update error:', sqlError);
-              } else {
-                console.log('Direct SQL update successful:', updateResult);
+              try {
+                // First, get full current payment data
+                const { data: fullPayment } = await supabase
+                  .from('order_payments')
+                  .select('*')
+                  .eq('order_id', existingOrder.id)
+                  .single();
+                  
+                if (fullPayment) {
+                  // Create a complete update with just the modified advance fields
+                  const criticalUpdate = {
+                    id: fullPayment.id,
+                    order_id: existingOrder.id,
+                    advance_cash: advanceCash,
+                    advance_card_upi: advanceCardUpi,
+                    advance_other: advanceOther,
+                    final_amount: finalAmount,  // Critical for balance calculation
+                    updated_at: new Date().toISOString()
+                  };
+                  
+                  const { data: updateResult, error: upsertError } = await supabase
+                    .from('order_payments')
+                    .upsert(criticalUpdate);
+                    
+                  if (upsertError) {
+                    console.error('Payment correction upsert error:', upsertError instanceof Error ? upsertError.message : 'Unknown error');
+                  } else {
+                    console.log('Payment correction successful:', updateResult);
+                  }
+                } else {
+                  console.error('Could not find payment record for correction');
+                }
+              } catch (correctionError) {
+                console.error('Error during payment correction:', correctionError instanceof Error ? correctionError.message : 'Unknown error');
               }
             }
           } catch (verificationError) {

@@ -24,45 +24,66 @@ const PaymentSection: React.FC<PaymentSectionProps> = ({
   // Calculate total discount amount
   const totalDiscountAmount = parseFloat(formData.schAmt || '0');
   
-  // Always calculate the values to use as fallback if database values aren't available
+  // Extract values from form data
   const cashAdv1 = parseFloat(formData.cashAdv1 || '0') || 0;
   const ccUpiAdv = parseFloat(formData.ccUpiAdv || '0') || 0;
   const advanceOther = parseFloat(formData.advanceOther || '0') || 0;
   
-  // Calculate total advance as sum of all advance types
-  const calculatedTotalAdvance = (cashAdv1 + ccUpiAdv + advanceOther).toFixed(2);
-  
-  // Calculate final balance correctly including tax and discount
+  // Calculate values for new users or as fallbacks
+  const totalAdvance = cashAdv1 + ccUpiAdv + advanceOther;
   const finalAmount = totalBaseAmount + totalTaxAmount - totalDiscountAmount;
-  const calculatedBalance = Math.max(0, finalAmount - (cashAdv1 + ccUpiAdv + advanceOther)).toFixed(2);
+  const calculatedBalance = Math.max(0, finalAmount - totalAdvance).toFixed(2);
+  const calculatedTotalAdvance = totalAdvance.toFixed(2);
   
-  // Determine if we need to display corrected values
-  // If total_advance is 0 but we have a tax amount and balance equals payment_estimate,
-  // then we likely need to show tax amount as the advance and reduce balance accordingly
-  const needsCorrection = 
-    parseFloat(formData.advance || '0') === 0 && 
-    parseFloat(formData.taxAmount || '0') > 0 && 
-    parseFloat(formData.balance || '0') === parseFloat(formData.paymentEstimate || '0');
+  // For existing users (being repopulated from database): ALWAYS use the database values directly
+  // For new users: Use the calculated values
+  // First check for the explicit isFromDatabase flag
+  // This is the most reliable way to detect records from database
+  const isExistingDatabaseRecord = 
+    // First priority: explicit flag set during data loading
+    formData.isFromDatabase === true || 
+    // Second priority: has prescription number and reference number
+    ((formData.prescriptionNo && formData.prescriptionNo !== '') && 
+     (formData.referenceNo && formData.referenceNo !== '')) || 
+    // Third priority: has database-populated payment values
+    (formData.advance && formData.advance !== '0' && formData.advance !== '0.00');
   
-  // For display, use corrected values when needed or fallback to database/calculated values
-  const displayTotalAdvance = needsCorrection ? 
-    formData.taxAmount : // Use tax amount as the advance
-    (formData.advance || calculatedTotalAdvance);
+  // RULE: For existing database records, NEVER recalculate - always use stored database values
+  // For new users, always use calculated values to allow real-time updates
+  
+  // Since UI should always reflect the actual input fields, for new users we need to calculate
+  // totalAdvance and balance from the raw input fields to avoid double-counting issues
+  const displayTotalAdvance = isExistingDatabaseRecord ? formData.advance : calculatedTotalAdvance;
+  const displayBalance = isExistingDatabaseRecord ? formData.balance : calculatedBalance;
+  
+  // Enhanced debugging to show clear decision paths
+  console.log('PaymentSection - DEBUG INFO:', {
+    // Source of data
+    sourceType: isExistingDatabaseRecord ? 'DATABASE VALUES' : 'CALCULATED VALUES',
     
-  const displayBalance = needsCorrection ? 
-    (parseFloat(formData.paymentEstimate || '0') - parseFloat(formData.taxAmount || '0')).toFixed(2) : 
-    (formData.balance || calculatedBalance);
-  
-  console.log('Payment values:', {
-    fromDatabase: {
+    // Raw form data
+    formData: {
       advance: formData.advance,
-      balance: formData.balance
+      balance: formData.balance,
+      advanceInputs: {
+        cashAdv1: formData.cashAdv1,
+        ccUpiAdv: formData.ccUpiAdv,
+        advanceOther: formData.advanceOther
+      }
     },
-    calculated: {
+    
+    // Calculated values (what would be shown if not using database)
+    calculatedValues: {
       totalAdvance: calculatedTotalAdvance,
-      balance: calculatedBalance
+      balance: calculatedBalance,
+      rawInputs: {
+        totalAdvance,
+        finalAmount
+      }
     },
-    display: {
+    
+    // What's actually being displayed
+    displayed: {
       totalAdvance: displayTotalAdvance,
       balance: displayBalance
     }
@@ -86,16 +107,16 @@ const PaymentSection: React.FC<PaymentSectionProps> = ({
         <div className="bg-blue-50 p-3 rounded border border-blue-100">
           <div className="text-sm font-medium text-blue-600">Total Advance</div>
           <div className="text-lg font-semibold text-blue-700">
-            {/* Show actual value from database or calculated value */}
-            ₹{formData.advance === '100.00' ? '100.00' : displayTotalAdvance}
+            {/* Show calculated total advance */}
+            ₹{displayTotalAdvance}
           </div>
         </div>
         
         <div className="bg-green-50 p-3 rounded border border-green-100">
           <div className="text-sm font-medium text-green-600">Balance</div>
           <div className="text-lg font-semibold text-green-700">
-            {/* Show actual value from database or calculated value */}
-            ₹{formData.balance === '1000.00' ? '1000.00' : displayBalance}
+            {/* Show calculated balance */}
+            ₹{displayBalance}
           </div>
         </div>
       </div>

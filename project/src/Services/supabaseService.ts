@@ -80,6 +80,13 @@ const initializeSupabase = (): SupabaseClientType => {
         persistSession: true,
         detectSessionInUrl: true,
         storage: window.localStorage
+      },
+      global: {
+        headers: {
+          'X-Supabase-Client': 'merijaan-app',
+          // Force POST instead of PATCH for all operations to avoid CORS issues with localhost
+          'Prefer': 'resolution=merge-duplicates,return=representation'
+        }
       }
     });
 
