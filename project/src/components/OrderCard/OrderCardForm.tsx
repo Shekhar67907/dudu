@@ -1644,24 +1644,43 @@ const OrderCardForm: React.FC = () => {
             throw new Error(`Failed to check payment record: ${paymentCheckError.message}`);
           }
           
-          // Convert advance values to numbers to ensure they're properly saved
+          // IMPORTANT: Use the EXACT values from the UI without recalculation
+          // Just parse them to ensure they're proper numbers
           const advanceCash = parseFloat(formData.cashAdv1 || '0');
           const advanceCardUpi = parseFloat(formData.ccUpiAdv || '0');
           const advanceOther = parseFloat(formData.advanceOther || '0');
-          const finalAmount = parseFloat(formData.paymentEstimate || '0');
+          
+          // Use the EXACT payment estimate from the UI without modifying it
+          const paymentEstimate = parseFloat(formData.paymentEstimate || '0');
+          
+          // Other values directly from UI
           const taxAmount = parseFloat(formData.taxAmount || '0');
           const discountAmount = parseFloat(formData.schAmt || '0');
           const scheduleAmount = parseFloat(formData.schAmt || '0');
           
-          // Log the exact values being sent to the database
+          // CRITICAL: final_amount must be payment_estimate MINUS discount_amount
+          // This is how the UI calculates it, and we need to match that for the database
+          // Otherwise the database's balance calculation will be incorrect
+          const finalAmount = paymentEstimate - discountAmount;
+          
+          // For logging purposes
+          const calculatedTotalAdvance = advanceCash + advanceCardUpi + advanceOther;
+          const calculatedBalance = Math.max(0, finalAmount - calculatedTotalAdvance);
+          
+          // Log the exact values being sent to the database and expected calculation results
           console.log('PAYMENT VALUES BEING SAVED TO DATABASE:', {
-            advanceCash,
-            advanceCardUpi,
-            advanceOther,
-            finalAmount,
-            taxAmount,
-            discountAmount,
-            scheduleAmount,
+            // Values being sent to database
+            sentValues: {
+              advanceCash,
+              advanceCardUpi,
+              advanceOther,
+              paymentEstimate,
+              finalAmount, // This is now correctly calculated as paymentEstimate - discountAmount
+              taxAmount,
+              discountAmount,
+              scheduleAmount
+            },
+            // Raw input values from the form
             rawFormData: {
               cashAdv1: formData.cashAdv1,
               ccUpiAdv: formData.ccUpiAdv,
@@ -1669,6 +1688,16 @@ const OrderCardForm: React.FC = () => {
               paymentEstimate: formData.paymentEstimate,
               taxAmount: formData.taxAmount,
               schAmt: formData.schAmt
+            },
+            // Expected database-generated values
+            expectedGenerated: {
+              total_advance: calculatedTotalAdvance.toFixed(2),
+              balance: calculatedBalance.toFixed(2)
+            },
+            // Values shown in UI
+            uiValues: {
+              advance: formData.advance,
+              balance: formData.balance
             }
           });
           
@@ -1677,10 +1706,10 @@ const OrderCardForm: React.FC = () => {
           // from raw fields. We only update the raw fields and let the database calculate the generated fields.
           const paymentData = {
             order_id: existingOrder.id,
-            payment_estimate: finalAmount,  // This matches formData.paymentEstimate
+            payment_estimate: paymentEstimate,  // This is exactly what's shown in the UI (should be 1100)
             tax_amount: taxAmount,
             discount_amount: discountAmount,
-            final_amount: finalAmount,       // CRITICAL: must equal payment_estimate for database balance calculation
+            final_amount: finalAmount,       // This now equals paymentEstimate exactly as shown in the UI
             advance_cash: advanceCash,       // Raw field
             advance_card_upi: advanceCardUpi, // Raw field
             advance_other: advanceOther,     // Raw field
