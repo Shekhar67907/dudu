@@ -203,15 +203,22 @@ const OrderCardForm: React.FC = () => {
 
   // Effect to calculate taxes, total advance, and balance in Payment Section
   useEffect(() => {
+    // CRITICAL FIX: Skip recalculation when data is from database
+    // This ensures we don't override the database values with calculated ones
+    if (formData.isFromDatabase) {
+      console.log('SKIPPING payment recalculation because data is from database');
+      return; // Exit early - don't recalculate when data is from database
+    }
+    
     try {
-      // Calculate total base amount (rate * qty) for all items
+      // Calculate total base amount for items
       const totalBaseAmount = formData.selectedItems.reduce((sum, item) => {
         const rate = parseFloat(item.rate?.toString() || '0');
         const qty = parseFloat(item.qty?.toString() || '1');
         return sum + (rate * qty);
       }, 0);
-
-      // Calculate total taxes from all items
+      
+      // Calculate total tax amount
       const totalTaxAmount = formData.selectedItems.reduce((sum, item) => {
         const rate = parseFloat(item.rate?.toString() || '0');
         const qty = parseFloat(item.qty?.toString() || '1');
@@ -232,7 +239,7 @@ const OrderCardForm: React.FC = () => {
       // Calculate total advance payments (directly from form inputs, not derived values)
       const cashAdv1 = parseFloat(formData.cashAdv1?.toString() || '0') || 0;
       const ccUpiAdv = parseFloat(formData.ccUpiAdv?.toString() || '0') || 0;
-      const advanceOther = parseFloat(formData.advance?.toString() || '0') || 0;
+      const advanceOther = parseFloat(formData.advanceOther?.toString() || '0') || 0; // FIXED: was using advance instead of advanceOther
       
       // Do not set the advance field in state - this was causing the recursive loop
       const totalAdvance = cashAdv1 + ccUpiAdv + advanceOther;
@@ -243,7 +250,7 @@ const OrderCardForm: React.FC = () => {
       // Balance = final amount - total advance (ensuring it's not negative)
       const balance = Math.max(0, finalAmount - totalAdvance);
       
-      console.log('Payment Calculation Debug:', {
+      console.log('Payment Calculation Debug (NEW VALUES):', {
         totalBaseAmount,
         totalTaxAmount,
         totalDiscountAmount,
@@ -775,28 +782,81 @@ const OrderCardForm: React.FC = () => {
   };
   
   // Handle suggestion selection
-  const handleSuggestionSelect = (suggestion: SearchSuggestion) => {
+  const handleSuggestionSelect = async (suggestion: SearchSuggestion) => {
     console.log('Selected suggestion:', suggestion);
-    console.log('IMPORTANT - Raw payment values from database:', {
-      advance: suggestion.advance,
-      balance: suggestion.balance,
-      advancePayments: {
-        cashAdv1: suggestion.cashAdv1,
-        ccUpiAdv: suggestion.ccUpiAdv,
-        advanceOther: suggestion.advanceOther
-      },
-      other: {
-        paymentEstimate: suggestion.paymentEstimate,
-        taxAmount: suggestion.taxAmount,
-        schAmt: suggestion.schAmt
-      }
-    });
+    
+    // Get the prescription ID from the suggestion
+    const prescriptionId = suggestion.id;
     let prescriptionNumber = suggestion.prescriptionNo;
     let referenceNumber = suggestion.referenceNo;
+    
+    // For existing prescriptions, fetch the latest order and payment data directly from database
+    let latestOrder: any = null;
+    let orderPayment: any = null;
     
     try {
       // Determine if this is a new order or loading an existing prescription
       const isNewOrder = !suggestion.id; // If no ID, it's a new order
+      
+      // If we have a prescription ID, directly fetch the latest order and payment data
+      if (!isNewOrder && prescriptionId) {
+        console.log(`Fetching latest order data for prescription ID: ${prescriptionId}`);
+        
+        // 1. First get the latest order for this prescription
+        const { data: orderData, error: orderError } = await supabase
+          .from('orders')
+          .select('*')
+          .eq('prescription_id', prescriptionId)
+          .order('created_at', { ascending: false })
+          .limit(1);
+          
+        if (orderError) {
+          console.error('Error fetching order data:', orderError);
+          throw new Error(`Failed to fetch order data: ${orderError.message}`);
+        }
+        
+        if (orderData && orderData.length > 0) {
+          latestOrder = orderData[0];
+          console.log('Latest order found:', latestOrder);
+          
+          // 2. Now fetch the payment data for this order
+          const orderId = latestOrder.id;
+          const { data: paymentData, error: paymentError } = await supabase
+            .from('order_payments')
+            .select('*')
+            .eq('order_id', orderId)
+            .maybeSingle();
+            
+          if (paymentError) {
+            console.error('Error fetching payment data:', paymentError);
+            throw new Error(`Failed to fetch payment data: ${paymentError.message}`);
+          }
+          
+          if (paymentData) {
+            orderPayment = paymentData;
+            console.log('DIRECT DATABASE ORDER PAYMENT DATA:', {
+              raw: orderPayment,
+              critical_values: {
+                payment_estimate: orderPayment.payment_estimate,
+                final_amount: orderPayment.final_amount,
+                advance_cash: orderPayment.advance_cash,
+                advance_card_upi: orderPayment.advance_card_upi,
+                advance_other: orderPayment.advance_other,
+                total_advance: orderPayment.total_advance,
+                balance: orderPayment.balance,
+              },
+              stringified: {
+                payment_estimate: orderPayment.payment_estimate?.toString(),
+                balance: orderPayment.balance?.toString()
+              }
+            });
+          } else {
+            console.log('No payment data found for this order');
+          }
+        } else {
+          console.log('No orders found for this prescription');
+        }
+      }
       
       // For prescription number and reference number:
       // 1. If it's an existing prescription (has ID), use the original values
@@ -815,16 +875,41 @@ const OrderCardForm: React.FC = () => {
         referenceNumber = prescriptionNumber;
       }
       
-      // Log selected items and payment details for debugging
-      console.log('Populating form with order data:', {
-        selectedItems: suggestion.selectedItems || [],
-        paymentData: {
+      // Enhanced payment data debugging
+      console.log('DIRECT PAYMENT DATA FROM DATABASE:', {
+        orderPayment: orderPayment ? {
+          payment_estimate: orderPayment.payment_estimate,
+          tax_amount: orderPayment.tax_amount,
+          discount_amount: orderPayment.discount_amount,
+          final_amount: orderPayment.final_amount,
+          advance_cash: orderPayment.advance_cash,
+          advance_card_upi: orderPayment.advance_card_upi,
+          advance_other: orderPayment.advance_other,
+          total_advance: orderPayment.total_advance,
+          balance: orderPayment.balance,
+          schedule_amount: orderPayment.schedule_amount
+        } : 'No direct payment data available',
+        
+        suggestionPaymentData: {
           paymentEstimate: suggestion.paymentEstimate,
           schAmt: suggestion.schAmt,
           advance: suggestion.advance,
+          balance: suggestion.balance,
           cashAdv1: suggestion.cashAdv1,
           ccUpiAdv: suggestion.ccUpiAdv,
-          chequeAdv: suggestion.chequeAdv
+          advanceOther: suggestion.advanceOther
+        },
+        
+        // Show which values will be used in the form
+        paymentValuesBeingUsed: {
+          paymentEstimate: orderPayment?.payment_estimate?.toString() || suggestion.paymentEstimate || '0.00',
+          taxAmount: orderPayment?.tax_amount?.toString() || suggestion.taxAmount || '0.00',
+          schAmt: orderPayment?.schedule_amount?.toString() || suggestion.schAmt || '0.00',
+          cashAdv1: orderPayment?.advance_cash?.toString() || suggestion.cashAdv1 || '0.00',
+          ccUpiAdv: orderPayment?.advance_card_upi?.toString() || suggestion.ccUpiAdv || '0.00',
+          advanceOther: orderPayment?.advance_other?.toString() || suggestion.advanceOther || '0.00',
+          advance: orderPayment?.total_advance?.toString() || suggestion.advance || '0.00',
+          balance: orderPayment?.balance?.toString() || suggestion.balance || '0.00'
         }
       });
       
@@ -874,21 +959,34 @@ const OrderCardForm: React.FC = () => {
         // CRITICAL: Do NOT format or transform any payment values from database
         // Use the raw string values directly to maintain data integrity
         
-        // Payment calculation fields - use raw values from database
-        paymentEstimate: suggestion.paymentEstimate || '0',
-        taxAmount: suggestion.taxAmount || '0',
-        schAmt: suggestion.schAmt || '0',
+        // EXTREMELY IMPORTANT: Set isFromDatabase flag to true
+        // This tells PaymentSection to use the database values directly without recalculation
+        isFromDatabase: true,
         
-        // Individual advance payments - use raw values from database
-        cashAdv1: suggestion.cashAdv1 || '0',
-        ccUpiAdv: suggestion.ccUpiAdv || '0',
-        advanceOther: suggestion.advanceOther || '0',
-        chequeAdv: suggestion.advanceOther || '0', // Fix: use advanceOther here, not taxAmount
+        // PAYMENT DATA: Use values directly from the database fetch if available
+        // Otherwise fall back to the suggestion data
+        // This ensures we're using the most up-to-date and accurate payment data
         
-        // Database generated columns - use raw values without any transformation
-        // This ensures we display exactly what's in the database
-        advance: suggestion.advance || '0',  // Database total_advance value
-        balance: suggestion.balance || '0',  // Database balance value
+        // Payment calculation fields
+        paymentEstimate: orderPayment?.payment_estimate?.toString() || suggestion.paymentEstimate || '0.00',
+        taxAmount: orderPayment?.tax_amount?.toString() || suggestion.taxAmount || '0.00',
+        schAmt: orderPayment?.schedule_amount?.toString() || suggestion.schAmt || '0.00',
+        
+        // Individual advance payments
+        cashAdv1: orderPayment?.advance_cash?.toString() || suggestion.cashAdv1 || '0.00',
+        ccUpiAdv: orderPayment?.advance_card_upi?.toString() || suggestion.ccUpiAdv || '0.00',
+        advanceOther: orderPayment?.advance_other?.toString() || suggestion.advanceOther || '0.00',
+        chequeAdv: orderPayment?.advance_other?.toString() || suggestion.advanceOther || '0.00',
+        
+        // Database generated columns - use exact number formats
+        // IMPORTANT FIX: Ensure we're capturing the exact numeric values from the database
+        // The previous implementation may have had formatting issues with the balance
+        advance: orderPayment?.total_advance ? parseFloat(orderPayment.total_advance).toFixed(2) : suggestion.advance || '0.00',
+        balance: orderPayment?.balance ? parseFloat(orderPayment.balance).toFixed(2) : suggestion.balance || '0.00',
+        
+        // Log which data source is being used
+        // This helps with debugging
+        __paymentDataSource: orderPayment ? 'DIRECT_DB_FETCH' : (suggestion.id ? 'SUGGESTION_DATA' : 'NEW_RECORD'),
         
         // Note: currentDateTime and deliveryDateTime are not part of the search result typically,
         // so we keep the existing values or generate new ones as per initial state logic.
