@@ -225,8 +225,8 @@ const ContactLensPrescriptionSection: React.FC<ContactLensPrescriptionSectionPro
   }, [formData.balanceLens, formData.rightEye, formData.leftEye.dv.lpd]); // Add formData.rightEye to dependencies to update when right eye changes
 
   return (
-    <div className="mt-4">
-      <div className="grid grid-cols-2 gap-4">
+    <div className="mt-4 overflow-x-auto pb-2">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 min-w-[700px]">
         {/* Right Eye Section */}
         <div className="border border-gray-200 rounded">
           <div className="bg-gray-50 py-2 px-3 text-center border-b border-gray-200">
@@ -234,7 +234,7 @@ const ContactLensPrescriptionSection: React.FC<ContactLensPrescriptionSectionPro
           </div>
           
           <div className="p-2">
-            <div className="grid grid-cols-7 gap-1 mb-2 text-center text-xs font-medium text-gray-600">
+            <div className="grid grid-cols-7 gap-2 mb-2 text-center text-xs font-medium text-gray-600">
               <div></div>
               <div>Sph</div>
               <div>Cyl</div>
@@ -246,83 +246,85 @@ const ContactLensPrescriptionSection: React.FC<ContactLensPrescriptionSectionPro
             </div>
             
             {/* D.V. Row */}
-            <div className="grid grid-cols-7 gap-1 mb-2 items-center">
+            <div className="grid grid-cols-7 gap-2 mb-2 items-center">
               <div className="text-xs font-medium text-gray-700">D.V</div>
               <Input
                 name="rightEye.dv.sph"
                 value={formData.rightEye.dv.sph}
                 onChange={handleNumericInputChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
               />
               <Input
                 name="rightEye.dv.cyl"
                 value={formData.rightEye.dv.cyl}
                 onChange={handleNumericInputChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
               />
               <Input
                 name="rightEye.dv.ax"
                 value={formData.rightEye.dv.ax}
                 onChange={handleNumericInputChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
               />
               <Input
                 name="rightEye.dv.add"
                 value={formData.rightEye.dv.add}
                 onChange={handleNumericInputChange}
                 onBlur={(e) => calculateNearVision('rightEye', e)}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
               />
               <Input
                 name="rightEye.dv.vn"
                 value={formData.rightEye.dv.vn}
                 onChange={handleVnChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
                 title="Enter distance vision (e.g., 6/6, 6/9, 6/12, 6/18, 6/24, 6/36, 6/60)"
+placeholder="6/"
               />
               <Input
                 name="rightEye.dv.rpd"
                 value={formData.rightEye.dv.rpd || ''}
                 onChange={handleNumericInputChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
               />
               <div className="text-xs text-center text-gray-500">-</div>
             </div>
             
             {/* N.V. Row */}
-            <div className="grid grid-cols-7 gap-1 items-center">
+            <div className="grid grid-cols-7 gap-2 items-center">
               <div className="text-xs font-medium text-gray-700">N.V</div>
               <Input
                 name="rightEye.nv.sph"
                 value={formData.rightEye.nv.sph}
                 onChange={handleNumericInputChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
               />
               <Input
                 name="rightEye.nv.cyl"
                 value={formData.rightEye.nv.cyl}
                 onChange={handleNumericInputChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
               />
               <Input
                 name="rightEye.nv.ax"
                 value={formData.rightEye.nv.ax}
                 onChange={handleNumericInputChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
               />
               <Input
                 name="rightEye.nv.add"
                 value={formData.rightEye.nv.add}
                 onChange={handleNumericInputChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
                 disabled={formData.balanceLens}
               />
               <Input
                 name="rightEye.nv.vn"
                 value={formData.rightEye.nv.vn}
                 onChange={handleVnChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
                 title="Enter near vision (e.g., N5, N6, N8, N10, N12, N18, N24)"
+placeholder="N"
               />
               <div></div>
               <div className="text-xs text-center text-gray-500">-</div>
@@ -346,7 +348,7 @@ const ContactLensPrescriptionSection: React.FC<ContactLensPrescriptionSectionPro
           </div>
           
           <div className="p-2">
-            <div className="grid grid-cols-7 gap-1 mb-2 text-center text-xs font-medium text-gray-600">
+            <div className="grid grid-cols-7 gap-2 mb-2 text-center text-xs font-medium text-gray-600">
               <div></div>
               <div>Sph</div>
               <div>Cyl</div>
@@ -358,27 +360,27 @@ const ContactLensPrescriptionSection: React.FC<ContactLensPrescriptionSectionPro
             </div>
             
             {/* D.V. Row */}
-            <div className="grid grid-cols-7 gap-1 mb-2 items-center">
+            <div className="grid grid-cols-7 gap-2 mb-2 items-center">
               <div className="text-xs font-medium text-gray-700">D.V</div>
               <Input
                 name="leftEye.dv.sph"
                 value={formData.leftEye.dv.sph}
                 onChange={handleNumericInputChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
                 disabled={formData.balanceLens}
               />
               <Input
                 name="leftEye.dv.cyl"
                 value={formData.leftEye.dv.cyl}
                 onChange={handleNumericInputChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
                 disabled={formData.balanceLens}
               />
               <Input
                 name="leftEye.dv.ax"
                 value={formData.leftEye.dv.ax}
                 onChange={handleNumericInputChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
                 disabled={formData.balanceLens}
               />
               <Input
@@ -386,65 +388,67 @@ const ContactLensPrescriptionSection: React.FC<ContactLensPrescriptionSectionPro
                 value={formData.leftEye.dv.add}
                 onChange={handleNumericInputChange}
                 onBlur={(e) => calculateNearVision('leftEye', e)}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
                 disabled={formData.balanceLens}
               />
               <Input
                 name="leftEye.dv.vn"
                 value={formData.leftEye.dv.vn}
                 onChange={handleVnChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
                 disabled={formData.balanceLens}
                 title="Enter distance vision (e.g., 6/6, 6/9, 6/12, 6/18, 6/24, 6/36, 6/60)"
+placeholder="6/"
               />
               <Input
                 name="leftEye.dv.lpd"
                 value={formData.leftEye.dv.lpd || ''}
                 onChange={handleNumericInputChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
                 disabled={formData.balanceLens}
               />
               <div className="text-xs text-center text-gray-500">-</div>
             </div>
             
             {/* N.V. Row */}
-            <div className="grid grid-cols-7 gap-1 items-center">
+            <div className="grid grid-cols-7 gap-2 items-center">
               <div className="text-xs font-medium text-gray-700">N.V</div>
               <Input
                 name="leftEye.nv.sph"
                 value={formData.leftEye.nv.sph}
                 onChange={handleNumericInputChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
                 disabled={formData.balanceLens}
               />
               <Input
                 name="leftEye.nv.cyl"
                 value={formData.leftEye.nv.cyl}
                 onChange={handleNumericInputChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
                 disabled={formData.balanceLens}
               />
               <Input
                 name="leftEye.nv.ax"
                 value={formData.leftEye.nv.ax}
                 onChange={handleNumericInputChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
                 disabled={formData.balanceLens}
               />
               <Input
                 name="leftEye.nv.add"
                 value={formData.leftEye.nv.add}
                 onChange={handleNumericInputChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
                 disabled={formData.balanceLens}
               />
               <Input
                 name="leftEye.nv.vn"
                 value={formData.leftEye.nv.vn}
                 onChange={handleVnChange}
-                className="h-8 text-sm text-center text-gray-900 min-w-[50px]"
+                className="h-8 text-sm text-center text-gray-900 min-w-[60px] w-full"
                 disabled={formData.balanceLens}
                 title="Enter near vision (e.g., N5, N6, N8, N10, N12, N18, N24)"
+placeholder="N"
               />
               <div></div>
               <div className="text-xs text-center text-gray-500">-</div>
