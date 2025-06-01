@@ -676,10 +676,29 @@ export const updateContactLensPrescription = async (prescriptionId: string, data
   try {
     console.log('Updating contact lens prescription:', prescriptionId);
     
-    // Update prescription data with new fields
+    // First, get the original record to ensure we have all required fields
+    const { data: originalRecord, error: fetchError } = await supabase
+      .from('contact_lens_prescriptions')
+      .select('*')
+      .eq('id', prescriptionId)
+      .single();
+    
+    if (fetchError) {
+      console.error('Error fetching original record:', fetchError);
+      return { success: false, message: `Error fetching original record: ${fetchError.message}` };
+    }
+    
+    if (!originalRecord) {
+      return { success: false, message: 'Record not found' };
+    }
+    
+    // Instead of using update() which results in PATCH requests, use upsert
+    // This approach uses POST method which is more commonly allowed in CORS policies
     const { error: prescriptionError } = await supabase
       .from('contact_lens_prescriptions')
-      .update({
+      .upsert({
+        id: prescriptionId, // Include the ID to match in conflict resolution
+        prescription_id: originalRecord.prescription_id, // Keep the original required field
         booked_by: data.prescription.booked_by,
         delivery_date: data.prescription.delivery_date || null,
         delivery_time: data.prescription.delivery_time || null,
@@ -687,8 +706,6 @@ export const updateContactLensPrescription = async (prescriptionId: string, data
         retest_date: data.prescription.retest_date || null,
         expiry_date: data.prescription.expiry_date || null,
         remarks: data.prescription.remarks || null,
-        
-        // Include the new fields
         reference_no: data.prescription.reference_no || null,
         customer_code: data.prescription.customer_code || null,
         birth_day: data.prescription.birth_day || null,
@@ -696,10 +713,8 @@ export const updateContactLensPrescription = async (prescriptionId: string, data
         pin: data.prescription.pin || null,
         phone_landline: data.prescription.phone_landline || null,
         prescribed_by: data.prescription.prescribed_by || null,
-        
-        updated_at: new Date()
-      })
-      .eq('id', prescriptionId);
+        updated_at: new Date().toISOString()
+      });
 
     if (prescriptionError) {
       console.error('Error updating contact lens prescription:', prescriptionError);
@@ -792,15 +807,30 @@ export const updateContactLensPrescription = async (prescriptionId: string, data
     }
 
     // Update payment data
+    // First, get the payment record to get its ID which we need for the upsert
+    const { data: existingPayment, error: fetchPaymentError } = await supabase
+      .from('contact_lens_payments')
+      .select('id')
+      .eq('contact_lens_prescription_id', prescriptionId)
+      .single();
+      
+    if (fetchPaymentError) {
+      console.error('Error fetching payment record:', fetchPaymentError);
+      return { success: false, message: `Error fetching payment record: ${fetchPaymentError.message}` };
+    }
+    
     // Calculate the adjusted estimate by subtracting the discount amount
     // This ensures the generated balance (estimate - advance) will match the UI calculation (estimate - advance - discount)
     const discountAmount = data.payment.discount_amount || 0;
     const originalEstimate = data.payment.estimate || 0;
     const effectiveEstimate = Math.max(0, originalEstimate - discountAmount);
     
+    // Use upsert instead of update to avoid CORS issues
     const { error: paymentError } = await supabase
       .from('contact_lens_payments')
-      .update({
+      .upsert({
+        id: existingPayment.id, // Include the ID to ensure we update existing record
+        contact_lens_prescription_id: prescriptionId,
         estimate: effectiveEstimate, // Use adjusted estimate that accounts for discount
         advance: data.payment.advance,
         payment_mode: data.payment.payment_mode,
@@ -809,9 +839,8 @@ export const updateContactLensPrescription = async (prescriptionId: string, data
         cheque_advance: data.payment.cheque_advance,
         discount_amount: data.payment.discount_amount,
         payment_date: data.payment.payment_date || new Date().toISOString().split('T')[0],
-        updated_at: new Date()
-      })
-      .eq('contact_lens_prescription_id', prescriptionId);
+        updated_at: new Date().toISOString()
+      });
 
     if (paymentError) {
       console.error('Error updating payment data:', paymentError);

@@ -25,6 +25,7 @@ const ContactLensPersonalInfo: React.FC<ContactLensPersonalInfoProps> = ({
 
   const prescribedByOptions = [
     { label: "Select Doctor", value: "" },
+    { label: "Optometrist", value: "Optometrist" },
     { label: "Dr. Smith", value: "Dr. Smith" },
     { label: "Dr. Johnson", value: "Dr. Johnson" },
     { label: "Dr. Williams", value: "Dr. Williams" }

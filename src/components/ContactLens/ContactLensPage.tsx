@@ -303,48 +303,98 @@ const ContactLensPage: React.FC = () => {
       };
     });
     
-    // Close the manual form
-    setShowManualForm(false);
-  };
-  
-  // Function to handle patient selection from search results
-  const handlePatientSelect = (patientData: any) => {
-    try {
-      // Show a notification that data is being loaded
-      setNotification({
-        message: 'Loading patient data...',
-        type: 'success',
-        visible: true
-      });
       
-      // Create a new form data object based on the patient data
-      const newFormData: ContactLensFormData = {
-        ...initialContactLensForm,
+  // Close the manual form
+  setShowManualForm(false);
+};
+
+// Function to handle patient selection from search results
+const handlePatientSelect = (patientData: any) => {
+  try {
+    // Log values from database to help debugging
+    console.log('DEBUG - Database Values:', {
+      prescribed_by: patientData.prescription.prescribed_by,
+      class: patientData.prescription.class,
+      date: patientData.prescription.date,
+      delivery_date: patientData.prescription.delivery_date
+    });
+    
+    // Show a notification that data is being loaded
+    setNotification({
+      message: 'Loading patient data...',
+      type: 'success',
+      visible: true
+    });
         
-        // Set the prescription fields
-        prescriptionNo: patientData.prescription.prescription_no || '',
-        reference_no: patientData.prescription.reference_no || patientData.prescription.ref_no || '',
-        name: patientData.prescription.name || '',
-        gender: patientData.prescription.gender || 'Male',
-        age: patientData.prescription.age || '',
-        address: patientData.prescription.address || '',
-        city: patientData.prescription.city || '',
-        state: patientData.prescription.state || '',
-        pin: patientData.prescription.pin || '',
-        mobile: patientData.prescription.mobile_no || patientData.prescription.mobile || '',
-        email: patientData.prescription.email || '',
-        remarks: patientData.prescription.remarks || '',
-        
-        // Set order status if available
-        orderStatus: patientData.prescription.status || 'Processing',
-        
-        // Map any prescription dates
-        dvDate: patientData.prescription.delivery_date || getTodayDate(),
-        dvTime: patientData.prescription.delivery_time || '18:30:00',
-        retestAfter: patientData.prescription.retest_date || getTodayDate(),
-        expiryDate: patientData.prescription.expiry_date || getTodayDate(),
+    // Create a new form data object based on the patient data
+    const newFormData: ContactLensFormData = {
+      ...initialContactLensForm,
+          
+      // Set the prescription fields
+      prescriptionNo: patientData.prescription.prescription_no || '',
+      reference_no: patientData.prescription.reference_no || patientData.prescription.ref_no || '',
+      name: patientData.prescription.name || '',
+      gender: patientData.prescription.gender || 'Male',
+          
+      // Fix for Age field
+      age: patientData.prescription.age || '',
+          
+      address: patientData.prescription.address || '',
+      city: patientData.prescription.city || '',
+      state: patientData.prescription.state || '',
+          
+      // Fix for PIN field
+      pin: patientData.prescription.pin || '',
+          
+      // Fix for Phone Landline field
+      phoneLandline: patientData.prescription.phone_landline || '',
+          
+      mobile: patientData.prescription.mobile_no || patientData.prescription.mobile || '',
+      email: patientData.prescription.email || '',
+      remarks: patientData.prescription.remarks || '',
+          
+      // Fix for Birth Day field
+      birthDay: patientData.prescription.birth_day || '',
+          
+      // Fix for Marriage Anniversary field
+      marriageAnniversary: patientData.prescription.marriage_anniversary || '',
+          
+      // Fix for Customer Code field
+      customerCode: patientData.prescription.customer_code || '',
+          
+      // Fix for Prescribed By field - ensure correct mapping from database to form field
+      prescBy: patientData.prescription.prescribed_by || '',
+          
+      // Fix for Class field - ensure correct mapping from database to form field
+      class: patientData.prescription.class || '',
+             
+      // Add debug logging outside the form data object
+      /* Debug logging */
+      // Console log right before this to track values in debug console
+      // console.log('Debug - Class:', patientData.prescription.class, 'Prescribed By:', patientData.prescription.prescribed_by);
+      
+      // Keep existing Booking By functionality
+      bookingBy: patientData.contactLensData?.booked_by || 
+                patientData.prescription.booked_by || 
+                '',
+      
+      // Keep existing Order Status functionality
+      orderStatus: patientData.contactLensData?.status || 'Processing',
+      
+      // Fix for Date field - directly accessing from prescription.date and formatting as ISO datetime
+      date: patientData.prescription.date ? 
+            patientData.prescription.date + 'T00:00' : 
+            getTodayDate() + 'T00:00',
+      
+      // Fix for Delivery Date field - directly accessing from prescription.delivery_date and formatting as ISO datetime
+      dvDate: patientData.prescription.delivery_date ? 
+              patientData.prescription.delivery_date + 'T00:00' : 
+              getTodayDate() + 'T00:00',
+      dvTime: patientData.prescription.delivery_time || '18:30:00',
+      retestAfter: patientData.prescription.retest_date || getTodayDate(),
+      expiryDate: patientData.prescription.expiry_date || getTodayDate(),
       };
-      
+          
       // If we have eye data, map it to the form structure
       if (patientData.eyes && patientData.eyes.length > 0) {
         // Process right eye data
@@ -575,6 +625,7 @@ const ContactLensPage: React.FC = () => {
                 onChange={handleChange}
                 options={[
                   { label: 'Select Class', value: '' },
+                  { label: 'Business', value: 'Business' },
                   { label: 'Class 1', value: 'Class 1' },
                   { label: 'Class 2', value: 'Class 2' }
                 ]}
